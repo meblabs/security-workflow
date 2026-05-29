@@ -8,6 +8,24 @@ on:
         required: true
         type: string
 
+      repository:
+        description: "Repository to scan and comment on, in owner/name format. Defaults to the caller repository."
+        required: false
+        type: string
+        default: ""
+
+      pr-number:
+        description: "Pull request number used for comments. Required when PR comments are enabled from workflow_call."
+        required: false
+        type: string
+        default: ""
+
+      head-ref:
+        description: "Pull request head branch name used by SARIF comment actions."
+        required: false
+        type: string
+        default: ""
+
       node-version:
         description: "Node.js version used when npm metadata is needed"
         required: false
@@ -127,6 +145,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
+          repository: ${{ inputs.repository != '' && inputs.repository || github.repository }}
           fetch-depth: 0
           ref: ${{ inputs.ref }}
           token: ${{ secrets['github-token'] }}
@@ -500,63 +519,191 @@ jobs:
           version: ${{ inputs.trivy-version }}
           skip-setup-trivy: true
 
+      - name: Normalize SARIF metadata
+        if: ${{ always() }}
+        shell: bash
+        env:
+          TRIVY_VERSION: ${{ inputs.trivy-version }}
+          SEMGREP_VERSION: ${{ inputs.semgrep-version }}
+          GITLEAKS_VERSION: ${{ inputs.gitleaks-version }}
+        run: |
+          set -euo pipefail
+
+          normalize_sarif() {
+            local file="$1"
+            local name="$2"
+            local organization="$3"
+            local version="$4"
+
+            if [[ ! -f "$file" ]]; then
+              return
+            fi
+
+            jq \
+              --arg name "$name" \
+              --arg organization "$organization" \
+              --arg version "$version" \
+              '(.runs[]?.tool.driver.name) |= (. // $name) |
+               (.runs[]?.tool.driver.organization) |= (. // $organization) |
+               (.runs[]?.tool.driver.semanticVersion) |= (. // $version) |
+               (.runs[]?.tool.driver.version) |= (. // $version)' \
+              "$file" > "${file}.tmp"
+            mv "${file}.tmp" "$file"
+          }
+
+          normalize_sarif security-reports/semgrep.sarif Semgrep Semgrep "${SEMGREP_VERSION}"
+          normalize_sarif security-reports/gitleaks.sarif Gitleaks Gitleaks "${GITLEAKS_VERSION}"
+          normalize_sarif security-reports/trivy-fs.sarif Trivy AquaSecurity "${TRIVY_VERSION}"
+          normalize_sarif security-reports/trivy-config.sarif Trivy AquaSecurity "${TRIVY_VERSION}"
+          normalize_sarif security-reports/trivy-image.sarif Trivy AquaSecurity "${TRIVY_VERSION}"
+
+      - name: Build SARIF findings overview
+        if: ${{ always() }}
+        uses: actions/github-script@v9
+        continue-on-error: true
+        with:
+          github-token: ${{ secrets['github-token'] }}
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+
+            const reports = [
+              ['Semgrep SAST', 'security-reports/semgrep.sarif'],
+              ['Gitleaks secrets', 'security-reports/gitleaks.sarif'],
+              ['Trivy filesystem SCA', 'security-reports/trivy-fs.sarif'],
+              ['Trivy IaC/config misconfiguration', 'security-reports/trivy-config.sarif'],
+              ['Trivy Docker image scan', 'security-reports/trivy-image.sarif'],
+            ];
+
+            const getRule = (run, ruleId) => {
+              return run?.tool?.driver?.rules?.find((rule) => rule.id === ruleId) ?? {};
+            };
+
+            const oneLine = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
+
+            const rows = [];
+            const sections = [];
+
+            for (const [label, file] of reports) {
+              if (!fs.existsSync(file)) {
+                rows.push(`| ${label} | no SARIF file | 0 |`);
+                continue;
+              }
+
+              let sarif;
+              try {
+                sarif = JSON.parse(fs.readFileSync(file, 'utf8'));
+              } catch (error) {
+                rows.push(`| ${label} | invalid SARIF | 0 |`);
+                continue;
+              }
+
+              const findings = [];
+              for (const run of sarif.runs ?? []) {
+                for (const result of run.results ?? []) {
+                  const rule = getRule(run, result.ruleId);
+                  const location = result.locations?.[0]?.physicalLocation;
+                  const artifact = location?.artifactLocation?.uri ?? '';
+                  const line = location?.region?.startLine ? `:${location.region.startLine}` : '';
+                  const message = oneLine(result.message?.text || rule.shortDescription?.text || result.ruleId || 'Finding');
+                  findings.push({
+                    ruleId: result.ruleId ?? rule.id ?? '',
+                    level: result.level ?? '',
+                    location: `${artifact}${line}`,
+                    message,
+                  });
+                }
+              }
+
+              rows.push(`| ${label} | ${findings.length > 0 ? 'findings' : 'clean'} | ${findings.length} |`);
+
+              if (findings.length > 0) {
+                sections.push(`### ${label}`);
+                sections.push('');
+                sections.push(`Total findings: ${findings.length}`);
+                sections.push('');
+                sections.push('| Rule | Location | Message |');
+                sections.push('|---|---|---|');
+                for (const finding of findings.slice(0, 25)) {
+                  sections.push(`| ${oneLine(finding.ruleId)} | ${oneLine(finding.location)} | ${oneLine(finding.message).slice(0, 240)} |`);
+                }
+                if (findings.length > 25) {
+                  sections.push(`| ... | ... | ${findings.length - 25} additional findings omitted from the summary. See the SARIF artifact. |`);
+                }
+                sections.push('');
+              }
+            }
+
+            const content = [
+              '## SARIF findings overview',
+              '',
+              '| Scanner | Status | Findings |',
+              '|---|---:|---:|',
+              ...rows,
+              '',
+              ...sections,
+            ].join('\n');
+
+            fs.writeFileSync('security-reports/sarif-findings-summary.md', content);
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n${content}\n`);
+
       - name: Post Semgrep SARIF findings in the pull request
-        if: ${{ always() && github.event_name == 'pull_request' && steps.semgrep.outcome == 'failure' && hashFiles('security-reports/semgrep.sarif') != '' }}
+        if: ${{ always() && inputs.pr-number != '' && steps.semgrep.outcome == 'failure' && hashFiles('security-reports/semgrep.sarif') != '' }}
         uses: meblabs/sarif-to-comment-action@v1
         continue-on-error: true
         with:
           token: ${{ secrets.token }}
-          repository: ${{ github.repository }}
-          branch: ${{ github.head_ref }}
-          pr-number: ${{ github.event.pull_request.number }}
+          repository: ${{ inputs.repository != '' && inputs.repository || github.repository }}
+          branch: ${{ inputs.head-ref }}
+          pr-number: ${{ inputs.pr-number }}
           sarif-file: security-reports/semgrep.sarif
           title: SAST Issues Found
 
       - name: Post Gitleaks SARIF findings in the pull request
-        if: ${{ always() && github.event_name == 'pull_request' && steps.gitleaks.outcome == 'failure' && hashFiles('security-reports/gitleaks.sarif') != '' }}
+        if: ${{ always() && inputs.pr-number != '' && steps.gitleaks.outcome == 'failure' && hashFiles('security-reports/gitleaks.sarif') != '' }}
         uses: meblabs/sarif-to-comment-action@v1
         continue-on-error: true
         with:
           token: ${{ secrets.token }}
-          repository: ${{ github.repository }}
-          branch: ${{ github.head_ref }}
-          pr-number: ${{ github.event.pull_request.number }}
+          repository: ${{ inputs.repository != '' && inputs.repository || github.repository }}
+          branch: ${{ inputs.head-ref }}
+          pr-number: ${{ inputs.pr-number }}
           sarif-file: security-reports/gitleaks.sarif
           title: Secret Scanning Issues Found
 
       - name: Post Trivy filesystem SARIF findings in the pull request
-        if: ${{ always() && github.event_name == 'pull_request' && steps.trivy_fs.outcome == 'failure' && hashFiles('security-reports/trivy-fs.sarif') != '' }}
+        if: ${{ always() && inputs.pr-number != '' && steps.trivy_fs.outcome == 'failure' && hashFiles('security-reports/trivy-fs.sarif') != '' }}
         uses: meblabs/sarif-to-comment-action@v1
         continue-on-error: true
         with:
           token: ${{ secrets.token }}
-          repository: ${{ github.repository }}
-          branch: ${{ github.head_ref }}
-          pr-number: ${{ github.event.pull_request.number }}
+          repository: ${{ inputs.repository != '' && inputs.repository || github.repository }}
+          branch: ${{ inputs.head-ref }}
+          pr-number: ${{ inputs.pr-number }}
           sarif-file: security-reports/trivy-fs.sarif
           title: Dependency Vulnerabilities Found
 
       - name: Post Trivy config SARIF findings in the pull request
-        if: ${{ always() && github.event_name == 'pull_request' && steps.trivy_config.outcome == 'failure' && hashFiles('security-reports/trivy-config.sarif') != '' }}
+        if: ${{ always() && inputs.pr-number != '' && steps.trivy_config.outcome == 'failure' && hashFiles('security-reports/trivy-config.sarif') != '' }}
         uses: meblabs/sarif-to-comment-action@v1
         continue-on-error: true
         with:
           token: ${{ secrets.token }}
-          repository: ${{ github.repository }}
-          branch: ${{ github.head_ref }}
-          pr-number: ${{ github.event.pull_request.number }}
+          repository: ${{ inputs.repository != '' && inputs.repository || github.repository }}
+          branch: ${{ inputs.head-ref }}
+          pr-number: ${{ inputs.pr-number }}
           sarif-file: security-reports/trivy-config.sarif
           title: IaC and Configuration Issues Found
 
       - name: Post Trivy Docker image SARIF findings in the pull request
-        if: ${{ always() && github.event_name == 'pull_request' && steps.trivy_image.outcome == 'failure' && hashFiles('security-reports/trivy-image.sarif') != '' }}
+        if: ${{ always() && inputs.pr-number != '' && steps.trivy_image.outcome == 'failure' && hashFiles('security-reports/trivy-image.sarif') != '' }}
         uses: meblabs/sarif-to-comment-action@v1
         continue-on-error: true
         with:
           token: ${{ secrets.token }}
-          repository: ${{ github.repository }}
-          branch: ${{ github.head_ref }}
-          pr-number: ${{ github.event.pull_request.number }}
+          repository: ${{ inputs.repository != '' && inputs.repository || github.repository }}
+          branch: ${{ inputs.head-ref }}
+          pr-number: ${{ inputs.pr-number }}
           sarif-file: security-reports/trivy-image.sarif
           title: Docker Image Vulnerabilities Found
 
@@ -581,13 +728,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          icon() {
+          status_badge() {
             case "$1" in
-              success) echo "PASS" ;;
-              failure) echo "FAIL" ;;
-              skipped) echo "SKIP" ;;
-              cancelled) echo "CANCELLED" ;;
-              *) echo "${1:-unknown}" ;;
+              success) echo "![PASS](https://img.shields.io/badge/status-PASS-brightgreen?style=flat-square)" ;;
+              failure) echo "![FAIL](https://img.shields.io/badge/status-FAIL-red?style=flat-square)" ;;
+              skipped) echo "![FAIL](https://img.shields.io/badge/status-FAIL-red?style=flat-square)" ;;
+              cancelled) echo "![FAIL](https://img.shields.io/badge/status-FAIL-red?style=flat-square)" ;;
+              na) echo "![NA](https://img.shields.io/badge/status-NA-lightgrey?style=flat-square)" ;;
+              *) echo "![UNKNOWN](https://img.shields.io/badge/status-UNKNOWN-lightgrey?style=flat-square)" ;;
             esac
           }
 
@@ -596,31 +744,31 @@ jobs:
             local applicable="$2"
 
             if [[ "$applicable" != "true" ]]; then
-              echo "SKIP - not applicable"
+              status_badge na
               return
             fi
 
-            icon "$outcome"
+            status_badge "$outcome"
           }
 
           {
             echo "## Security checks"
             echo ""
-            echo "| Check | Outcome | Blocking |"
-            echo "|---|---:|---:|"
-            echo "| Semgrep SAST | $(icon "$SEMGREP_OUTCOME") | yes |"
-            echo "| Gitleaks secrets | $(icon "$GITLEAKS_OUTCOME") | yes |"
-            echo "| Trivy filesystem SCA | $(icon "$TRIVY_FS_OUTCOME") | yes |"
-            echo "| Trivy IaC/config misconfiguration | $(icon "$TRIVY_CONFIG_OUTCOME") | yes |"
-            echo "| cfn-lint SAM/CloudFormation validation | $(applicable_outcome "$CFN_LINT_OUTCOME" "$SAM_TEMPLATES") | yes if templates exist |"
-            echo "| zizmor GitHub Actions security | $(applicable_outcome "$ZIZMOR_OUTCOME" "$GITHUB_ACTIONS_FILES") | yes if workflow/action files exist |"
-            echo "| Docker image build | $(applicable_outcome "$DOCKER_BUILD_OUTCOME" "$ROOT_DOCKERFILE") | yes if Dockerfile exists |"
-            echo "| Trivy Docker image scan | $(applicable_outcome "$TRIVY_IMAGE_OUTCOME" "$ROOT_DOCKERFILE") | yes if Dockerfile exists |"
-            echo "| Trivy license report | $(icon "$TRIVY_LICENSE_OUTCOME") | no |"
-            echo "| Trivy filesystem SBOM | $(icon "$TRIVY_SBOM_OUTCOME") | no |"
-            echo "| Trivy Docker image SBOM | $(applicable_outcome "$TRIVY_IMAGE_SBOM_OUTCOME" "$ROOT_DOCKERFILE") | no |"
+            echo "| Check | Outcome |"
+            echo "|---|---:|"
+            echo "| Semgrep SAST | $(status_badge "$SEMGREP_OUTCOME") |"
+            echo "| Gitleaks secrets | $(status_badge "$GITLEAKS_OUTCOME") |"
+            echo "| Trivy filesystem SCA | $(status_badge "$TRIVY_FS_OUTCOME") |"
+            echo "| Trivy IaC/config misconfiguration | $(status_badge "$TRIVY_CONFIG_OUTCOME") |"
+            echo "| cfn-lint SAM/CloudFormation validation | $(applicable_outcome "$CFN_LINT_OUTCOME" "$SAM_TEMPLATES") |"
+            echo "| zizmor GitHub Actions security | $(applicable_outcome "$ZIZMOR_OUTCOME" "$GITHUB_ACTIONS_FILES") |"
+            echo "| Docker image build | $(applicable_outcome "$DOCKER_BUILD_OUTCOME" "$ROOT_DOCKERFILE") |"
+            echo "| Trivy Docker image scan | $(applicable_outcome "$TRIVY_IMAGE_OUTCOME" "$ROOT_DOCKERFILE") |"
+            echo "| Trivy license report | $(status_badge "$TRIVY_LICENSE_OUTCOME") |"
+            echo "| Trivy filesystem SBOM | $(status_badge "$TRIVY_SBOM_OUTCOME") |"
+            echo "| Trivy Docker image SBOM | $(applicable_outcome "$TRIVY_IMAGE_SBOM_OUTCOME" "$ROOT_DOCKERFILE") |"
             echo ""
-            echo "Reports are available in the security-reports artifact."
+            echo "Full scanner output is available in the security-reports artifact. SARIF comments are posted only for scanners that produce SARIF files."
             echo ""
           } | tee -a security-reports/security-summary.md >> "$GITHUB_STEP_SUMMARY"
 
@@ -645,7 +793,7 @@ jobs:
           append_details "zizmor output" security-reports/zizmor.txt
 
       - name: Post security summary in the pull request
-        if: ${{ always() && inputs.post-pr-comment && github.event_name == 'pull_request' }}
+        if: ${{ always() && inputs.post-pr-comment && inputs.pr-number != '' }}
         uses: actions/github-script@v9
         continue-on-error: true
         env:
@@ -664,19 +812,41 @@ jobs:
           SAM_TEMPLATES: ${{ steps.security_targets.outputs.sam_templates }}
           GITHUB_ACTIONS_FILES: ${{ steps.security_targets.outputs.github_actions_files }}
           SCANNED_REF: ${{ inputs.ref }}
+          COMMENT_REPOSITORY: ${{ inputs.repository != '' && inputs.repository || github.repository }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+          HEAD_REF: ${{ inputs.head-ref }}
         with:
           github-token: ${{ secrets.token }}
           script: |
+            const fs = require('node:fs');
+
+            const [owner, repo] = process.env.COMMENT_REPOSITORY.split('/');
+            const issue_number = Number(process.env.PR_NUMBER);
+
+            if (!owner || !repo || !Number.isInteger(issue_number) || issue_number <= 0) {
+              core.setFailed(`Invalid pull request comment target: repository=${process.env.COMMENT_REPOSITORY}, pr-number=${process.env.PR_NUMBER}`);
+              return;
+            }
+
             const marker = '<!-- meblabs-security-workflow:summary -->';
 
+            const badge = (status) => {
+              const badges = {
+                PASS: '![PASS](https://img.shields.io/badge/status-PASS-brightgreen?style=flat-square)',
+                FAIL: '![FAIL](https://img.shields.io/badge/status-FAIL-red?style=flat-square)',
+                NA: '![NA](https://img.shields.io/badge/status-NA-lightgrey?style=flat-square)',
+                UNKNOWN: '![UNKNOWN](https://img.shields.io/badge/status-UNKNOWN-lightgrey?style=flat-square)',
+              };
+              return badges[status] ?? badges.UNKNOWN;
+            };
+
             const normalize = (outcome, applicable = true) => {
-              if (!applicable) return 'SKIP - not applicable';
-              if (!outcome) return 'SKIP';
+              if (!applicable) return 'NA';
               if (outcome === 'success') return 'PASS';
               if (outcome === 'failure') return 'FAIL';
-              if (outcome === 'skipped') return 'SKIP';
-              if (outcome === 'cancelled') return 'CANCELLED';
-              return outcome;
+              if (outcome === 'skipped') return 'FAIL';
+              if (outcome === 'cancelled') return 'FAIL';
+              return 'UNKNOWN';
             };
 
             const rootDockerfile = process.env.ROOT_DOCKERFILE === 'true';
@@ -684,41 +854,60 @@ jobs:
             const githubActionsFiles = process.env.GITHUB_ACTIONS_FILES === 'true';
 
             const rows = [
-              ['Semgrep SAST', normalize(process.env.SEMGREP_OUTCOME), 'yes'],
-              ['Gitleaks secrets', normalize(process.env.GITLEAKS_OUTCOME), 'yes'],
-              ['Trivy filesystem SCA', normalize(process.env.TRIVY_FS_OUTCOME), 'yes'],
-              ['Trivy IaC/config misconfiguration', normalize(process.env.TRIVY_CONFIG_OUTCOME), 'yes'],
-              ['cfn-lint SAM/CloudFormation validation', normalize(process.env.CFN_LINT_OUTCOME, samTemplates), 'yes if templates exist'],
-              ['zizmor GitHub Actions security', normalize(process.env.ZIZMOR_OUTCOME, githubActionsFiles), 'yes if workflow/action files exist'],
-              ['Docker image build', normalize(process.env.DOCKER_BUILD_OUTCOME, rootDockerfile), 'yes if Dockerfile exists'],
-              ['Trivy Docker image scan', normalize(process.env.TRIVY_IMAGE_OUTCOME, rootDockerfile), 'yes if Dockerfile exists'],
-              ['Trivy license report', normalize(process.env.TRIVY_LICENSE_OUTCOME), 'no'],
-              ['Trivy filesystem SBOM', normalize(process.env.TRIVY_SBOM_OUTCOME), 'no'],
-              ['Trivy Docker image SBOM', normalize(process.env.TRIVY_IMAGE_SBOM_OUTCOME, rootDockerfile), 'no'],
+              ['Semgrep SAST', normalize(process.env.SEMGREP_OUTCOME), true],
+              ['Gitleaks secrets', normalize(process.env.GITLEAKS_OUTCOME), true],
+              ['Trivy filesystem SCA', normalize(process.env.TRIVY_FS_OUTCOME), true],
+              ['Trivy IaC/config misconfiguration', normalize(process.env.TRIVY_CONFIG_OUTCOME), true],
+              ['cfn-lint SAM/CloudFormation validation', normalize(process.env.CFN_LINT_OUTCOME, samTemplates), samTemplates],
+              ['zizmor GitHub Actions security', normalize(process.env.ZIZMOR_OUTCOME, githubActionsFiles), githubActionsFiles],
+              ['Docker image build', normalize(process.env.DOCKER_BUILD_OUTCOME, rootDockerfile), rootDockerfile],
+              ['Trivy Docker image scan', normalize(process.env.TRIVY_IMAGE_OUTCOME, rootDockerfile), rootDockerfile],
+              ['Trivy license report', normalize(process.env.TRIVY_LICENSE_OUTCOME), false],
+              ['Trivy filesystem SBOM', normalize(process.env.TRIVY_SBOM_OUTCOME), false],
+              ['Trivy Docker image SBOM', normalize(process.env.TRIVY_IMAGE_SBOM_OUTCOME, rootDockerfile), false],
             ];
 
             const hasBlockingFailure = rows.some(([, outcome, blocking]) => {
-              if (!blocking.startsWith('yes')) return false;
-              return outcome !== 'PASS' && outcome !== 'SKIP - not applicable';
+              if (!blocking) return false;
+              return outcome !== 'PASS' && outcome !== 'NA';
             });
+
+            const details = (title, file) => {
+              if (!fs.existsSync(file)) return [];
+              const content = fs.readFileSync(file, 'utf8').trim();
+              if (!content) return [];
+              const excerpt = content.split('\n').slice(0, 200).join('\n');
+              return [
+                '',
+                `<details><summary>${title}</summary>`,
+                '',
+                '```text',
+                excerpt,
+                '```',
+                '</details>',
+              ];
+            };
 
             const body = [
               marker,
               '### Security',
               '',
               `Scanned ref: \`${process.env.SCANNED_REF}\``,
+              process.env.HEAD_REF ? `Head ref: \`${process.env.HEAD_REF}\`` : '',
               '',
               hasBlockingFailure
-                ? 'One or more blocking security checks failed. Review the SARIF comments and the `security-reports` artifact before merging.'
+                ? 'One or more security checks failed. Review SARIF comments when present and the `security-reports` artifact for complete scanner output.'
                 : 'All applicable blocking security checks passed.',
               '',
-              '| Check | Outcome | Blocking |',
-              '|---|---:|---:|',
-              ...rows.map(([name, outcome, blocking]) => `| ${name} | ${outcome} | ${blocking} |`),
+              '| Check | Outcome |',
+              '|---|---:|',
+              ...rows.map(([name, outcome]) => `| ${name} | ${badge(outcome)} |`),
+              '',
+              'Detailed output is available in the `security-reports` artifact. Separate SARIF comments are posted only for scanners that generate SARIF reports: Semgrep, Gitleaks, Trivy filesystem, Trivy config, and Trivy image.',
+              ...details('cfn-lint output', 'security-reports/cfn-lint.txt'),
+              ...details('zizmor output', 'security-reports/zizmor.txt'),
+              ...details('SARIF findings overview', 'security-reports/sarif-findings-summary.md'),
             ].join('\n');
-
-            const { owner, repo } = context.repo;
-            const issue_number = context.issue.number;
 
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner,

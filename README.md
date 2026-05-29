@@ -76,7 +76,7 @@ This check is broad and always runs. Dedicated `cfn-lint` and `zizmor` checks st
 
 It validates AWS SAM and CloudFormation templates for structural errors, invalid resource properties, unsupported values, and template issues that CloudFormation would reject or warn about. The workflow installs `cfn-lint[sarif]` in a temporary Python virtual environment and runs it with `--non-zero-exit-code error`.
 
-The workflow writes textual output to `security-reports/cfn-lint.txt` and includes the first 200 lines in the GitHub Step Summary. `cfn-lint` is a blocking check only when templates are detected; otherwise it is reported as `SKIP - not applicable`.
+The workflow writes textual output to `security-reports/cfn-lint.txt` and includes the first 200 lines in the GitHub Step Summary. `cfn-lint` is a blocking check only when templates are detected; otherwise it is reported as `NA`.
 
 ### zizmor GitHub Actions Security
 
@@ -91,7 +91,7 @@ It scans workflow and action definitions for security issues such as unsafe perm
 
 When `github-token` is available, the workflow passes it as `GH_TOKEN` so `zizmor` can perform API-backed checks. Otherwise it can run in offline mode, but in this workflow `github-token` is required by the reusable workflow contract.
 
-The workflow writes `security-reports/zizmor.txt` and includes the first 200 lines in the GitHub Step Summary. Exit code `3` is treated as reportable findings rather than a blocking failure according to the current operational policy. `zizmor` is a blocking check only when workflow/action files are detected; otherwise it is reported as `SKIP - not applicable`.
+The workflow writes `security-reports/zizmor.txt` and includes the first 200 lines in the GitHub Step Summary. Exit code `3` is treated as reportable findings rather than a blocking failure according to the current operational policy. `zizmor` is a blocking check only when workflow/action files are detected; otherwise it is reported as `NA`.
 
 ### Docker Image Build
 
@@ -104,7 +104,7 @@ The workflow builds a local image using:
 - optional newline-separated `docker-build-args`
 - local tag `${{ inputs.docker-image-name }}:${{ github.sha }}`
 
-The resulting image reference is written to `security-reports/docker-image-ref.txt`. The build is a blocking check when the configured Dockerfile exists. If no configured Dockerfile exists, Docker image build and image scanning are reported as `SKIP - not applicable`.
+The resulting image reference is written to `security-reports/docker-image-ref.txt`. The build is a blocking check when the configured Dockerfile exists. If no configured Dockerfile exists, Docker image build and image scanning are reported as `NA`.
 
 ### Trivy Docker Image Vulnerability Scan
 
@@ -139,11 +139,13 @@ When the workflow runs on a pull request, it can publish two kinds of comments u
 - Scanner-specific SARIF comments for Semgrep, Gitleaks, Trivy filesystem, Trivy config, and Trivy image failures.
 - One consolidated summary comment marked with `<!-- meblabs-security-workflow:summary -->`.
 
-The consolidated comment is idempotent: the workflow updates the previous marked comment instead of creating a new one on every run.
+Scanner-specific comments are created only when the scanner produced a SARIF file and the step failed. `cfn-lint` and `zizmor` produce text reports, so their output is included in the consolidated comment and in the `security-reports` artifact instead of separate SARIF comments.
+
+The consolidated comment is idempotent: the workflow updates the previous marked comment instead of creating a new one on every run. Its table has only `Check` and `Outcome` columns. Outcomes are rendered as green `PASS`, red `FAIL`, or grey `NA` badges. `NA` means that the check was not applicable to the scanned repository, for example Docker image scanning when the configured Dockerfile does not exist.
 
 ### Artifact And Step Summary
 
-The workflow always prepares `security-reports/security-summary.md` and writes a security table to the GitHub Step Summary. When `upload-artifact` is enabled, it uploads the full `security-reports` directory as the `security-reports` artifact.
+The workflow always prepares `security-reports/security-summary.md` and writes a security table to the GitHub Step Summary. The Step Summary uses the same `PASS`, `FAIL`, and `NA` outcomes as the PR comment. When `upload-artifact` is enabled, it uploads the full `security-reports` directory as the `security-reports` artifact.
 
 Artifact upload and PR comments are non-blocking. They use `continue-on-error: true` so report publication problems do not hide scanner outcomes.
 
@@ -213,12 +215,16 @@ on:
 
 jobs:
   security:
-    uses: meblabs/security-workflow/.github/workflows/security.yml@v1
+    name: Security Gate
+    uses: meblabs/security-workflow/.github/workflows/security.yml@v1.0
     permissions:
       contents: read
       actions: read
     with:
-      ref: ${{ github.event.pull_request.head.sha }}
+      ref: ${{ needs.quality.outputs.current-head-sha }}
+      repository: ${{ github.repository }}
+      pr-number: ${{ github.event.pull_request.number }}
+      head-ref: ${{ github.head_ref }}
     secrets:
       token: ${{ secrets.MEBBOT }}
       github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -237,15 +243,14 @@ on:
 
 jobs:
   quality:
+    name: Quality Gate
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       checks: write
-      contents: write
       pull-requests: write
+      contents: write
       issues: write
-      statuses: write
-      actions: read
     outputs:
       prettier-changed: ${{ steps.quality.outputs.prettier-changed }}
       audit-changed: ${{ steps.quality.outputs.audit-changed }}
@@ -265,16 +270,20 @@ jobs:
           test: true
 
   security:
+    name: Security Gate
     needs: quality
     if: |
       needs.quality.outputs.prettier-changed != 'true' &&
       needs.quality.outputs.audit-changed != 'true'
-    uses: meblabs/security-workflow/.github/workflows/security.yml@v1
+    uses: meblabs/security-workflow/.github/workflows/security.yml@v1.0
     permissions:
       contents: read
       actions: read
     with:
       ref: ${{ needs.quality.outputs.current-head-sha }}
+      repository: ${{ github.repository }}
+      pr-number: ${{ github.event.pull_request.number }}
+      head-ref: ${{ github.head_ref }}
     secrets:
       token: ${{ secrets.MEBBOT }}
       github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -329,7 +338,7 @@ Non-blocking outputs:
 - Docker image SBOM.
 - PR comments and artifact upload.
 
-Missing optional targets are reported as `SKIP - not applicable`, not as failures.
+Missing optional targets are reported as `NA`, not as failures.
 
 ## Troubleshooting
 
