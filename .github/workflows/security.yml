@@ -1,0 +1,821 @@
+name: Security
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref, branch, tag, or SHA to scan"
+        required: true
+        type: string
+
+      node-version:
+        description: "Node.js version used when npm metadata is needed"
+        required: false
+        type: string
+        default: "22.x"
+
+      security-config:
+        description: "Semgrep config/rulesets. Use 'auto' or a space-separated list such as 'p/javascript p/typescript p/owasp-top-ten'"
+        required: false
+        type: string
+        default: "auto"
+
+      security-severity-threshold:
+        description: "Minimum Semgrep severity that fails the security gate: low/info, medium/warning, high/error"
+        required: false
+        type: string
+        default: "high"
+
+      security-vulnerability-severities:
+        description: "Comma-separated Trivy severities that fail the security gate"
+        required: false
+        type: string
+        default: "HIGH,CRITICAL"
+
+      security-skip-dirs:
+        description: "Comma-separated directories skipped by Trivy filesystem/config scans"
+        required: false
+        type: string
+        default: "node_modules,.git,coverage,dist,build,.next,.nuxt"
+
+      semgrep-version:
+        description: "Semgrep Docker image tag"
+        required: false
+        type: string
+        default: "latest"
+
+      trivy-version:
+        description: "Trivy CLI version used by aquasecurity/trivy-action"
+        required: false
+        type: string
+        default: "v0.70.0"
+
+      gitleaks-version:
+        description: "Gitleaks Docker image tag"
+        required: false
+        type: string
+        default: "v8.30.1"
+
+      zizmor-version:
+        description: "zizmor Docker image tag"
+        required: false
+        type: string
+        default: "v1.25.2"
+
+      dockerfile-path:
+        description: "Dockerfile path used for optional Docker image build and scan"
+        required: false
+        type: string
+        default: "Dockerfile"
+
+      docker-build-context:
+        description: "Docker build context used for optional Docker image build and scan"
+        required: false
+        type: string
+        default: "."
+
+      docker-build-args:
+        description: "Optional newline-separated Docker build args in KEY=VALUE format"
+        required: false
+        type: string
+        default: ""
+
+      docker-image-name:
+        description: "Local Docker image name used for security scanning"
+        required: false
+        type: string
+        default: "meblabs-security-scan"
+
+      post-pr-comment:
+        description: "Post or update a consolidated security summary comment on pull requests"
+        required: false
+        type: boolean
+        default: true
+
+      upload-artifact:
+        description: "Upload security reports as a workflow artifact"
+        required: false
+        type: boolean
+        default: true
+
+      artifact-retention-days:
+        description: "Retention days for the security-reports artifact"
+        required: false
+        type: number
+        default: 14
+
+    secrets:
+      token:
+        description: "Bot token used for pull request comments. Use secrets.MEBBOT."
+        required: true
+
+      github-token:
+        description: "GitHub token used for checkout and read/API-backed scanner checks. Use secrets.GITHUB_TOKEN."
+        required: true
+
+jobs:
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets['github-token'] }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: ${{ hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json') != '' && 'npm' || '' }}
+          cache-dependency-path: |
+            **/package-lock.json
+            **/npm-shrinkwrap.json
+          package-manager-cache: false
+
+      - name: Prepare security reports
+        id: security_prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf security-reports
+          mkdir -p security-reports
+
+          {
+            echo "# Security report"
+            echo ""
+            echo "- Repository: ${GITHUB_REPOSITORY}"
+            echo "- Ref: ${{ inputs.ref }}"
+            echo "- Commit: $(git rev-parse HEAD)"
+            echo "- Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo ""
+          } > security-reports/security-summary.md
+
+      - name: Detect optional security targets
+        id: security_targets
+        shell: bash
+        env:
+          DOCKERFILE_PATH: ${{ inputs.dockerfile-path }}
+        run: |
+          set -euo pipefail
+
+          root_dockerfile=false
+          if [[ -f "${DOCKERFILE_PATH}" ]]; then
+            root_dockerfile=true
+          fi
+
+          dockerfiles_count="$(find . \
+            -type f \( -iname 'Dockerfile' -o -iname '*.Dockerfile' -o -name 'Dockerfile.*' \) \
+            -not -path './node_modules/*' \
+            -not -path './.git/*' \
+            -print | wc -l | tr -d ' ')"
+
+          sam_templates_count="$(find . \
+            -type f \( -name 'template.yaml' -o -name 'template.yml' \) \
+            -not -path './node_modules/*' \
+            -not -path './.git/*' \
+            -print | wc -l | tr -d ' ')"
+
+          github_actions_files_count="$(find . \
+            -type f \( \
+              -path './.github/workflows/*.yml' \
+              -o -path './.github/workflows/*.yaml' \
+              -o -name 'action.yml' \
+              -o -name 'action.yaml' \
+            \) \
+            -not -path './node_modules/*' \
+            -not -path './.git/*' \
+            -print | wc -l | tr -d ' ')"
+
+          dockerfiles=false
+          sam_templates=false
+          github_actions_files=false
+
+          if [[ "${dockerfiles_count}" -gt 0 ]]; then
+            dockerfiles=true
+          fi
+
+          if [[ "${sam_templates_count}" -gt 0 ]]; then
+            sam_templates=true
+          fi
+
+          if [[ "${github_actions_files_count}" -gt 0 ]]; then
+            github_actions_files=true
+          fi
+
+          {
+            echo "root_dockerfile=${root_dockerfile}"
+            echo "dockerfiles=${dockerfiles}"
+            echo "sam_templates=${sam_templates}"
+            echo "github_actions_files=${github_actions_files}"
+            echo "dockerfiles_count=${dockerfiles_count}"
+            echo "sam_templates_count=${sam_templates_count}"
+            echo "github_actions_files_count=${github_actions_files_count}"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Detected optional targets"
+            echo ""
+            echo "- Configured Dockerfile for image scan: ${root_dockerfile}"
+            echo "- Dockerfile/config files: ${dockerfiles_count}"
+            echo "- SAM/CloudFormation templates: ${sam_templates_count}"
+            echo "- GitHub Actions/action files: ${github_actions_files_count}"
+            echo ""
+          } >> security-reports/security-summary.md
+
+      - name: Semgrep SAST
+        id: semgrep
+        shell: bash
+        continue-on-error: true
+        env:
+          SEMGREP_CONFIG: ${{ inputs.security-config }}
+          SEMGREP_SEVERITY_THRESHOLD: ${{ inputs.security-severity-threshold }}
+          SEMGREP_VERSION: ${{ inputs.semgrep-version }}
+        run: |
+          set -euo pipefail
+
+          config_args=()
+          for config in ${SEMGREP_CONFIG}; do
+            [[ -z "$config" ]] && continue
+            config_args+=(--config "$config")
+          done
+
+          severity_args=()
+          case "${SEMGREP_SEVERITY_THRESHOLD,,}" in
+            low|info)
+              severity_args+=(--severity INFO --severity WARNING --severity ERROR)
+              ;;
+            medium|warning)
+              severity_args+=(--severity WARNING --severity ERROR)
+              ;;
+            high|error|critical)
+              severity_args+=(--severity ERROR)
+              ;;
+            *)
+              echo "Invalid security-severity-threshold: ${SEMGREP_SEVERITY_THRESHOLD}" >&2
+              echo "Use one of: low, medium, high, info, warning, error, critical." >&2
+              exit 2
+              ;;
+          esac
+
+          docker run --rm \
+            -v "$PWD:/src" \
+            -w /src \
+            "semgrep/semgrep:${SEMGREP_VERSION}" \
+            semgrep scan \
+            "${config_args[@]}" \
+            "${severity_args[@]}" \
+            --exclude node_modules \
+            --exclude .git \
+            --sarif \
+            --output security-reports/semgrep.sarif \
+            --error \
+            .
+
+      - name: Secret scan with Gitleaks
+        id: gitleaks
+        shell: bash
+        continue-on-error: true
+        env:
+          GITLEAKS_VERSION: ${{ inputs.gitleaks-version }}
+        run: |
+          set -euo pipefail
+
+          tmpdir="$(mktemp -d)"
+          cleanup() {
+            rm -rf "$tmpdir"
+          }
+          trap cleanup EXIT
+
+          git ls-files -z | tar --null -T - -cf - | tar -xf - -C "$tmpdir"
+
+          docker run --rm \
+            -v "$tmpdir:/scan:ro" \
+            -v "$PWD/security-reports:/reports" \
+            "ghcr.io/gitleaks/gitleaks:${GITLEAKS_VERSION}" \
+            dir /scan \
+            --redact \
+            --no-banner \
+            --report-format sarif \
+            --report-path /reports/gitleaks.sarif \
+            --exit-code 1 \
+            --log-level warn \
+            --max-target-megabytes 2
+
+      - name: Trivy SCA filesystem vulnerability scan
+        id: trivy_fs
+        uses: aquasecurity/trivy-action@v0.36.0
+        continue-on-error: true
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          scanners: "vuln"
+          vuln-type: "os,library"
+          severity: ${{ inputs.security-vulnerability-severities }}
+          ignore-unfixed: true
+          exit-code: "1"
+          format: "sarif"
+          output: "security-reports/trivy-fs.sarif"
+          skip-dirs: ${{ inputs.security-skip-dirs }}
+          limit-severities-for-sarif: true
+          version: ${{ inputs.trivy-version }}
+
+      - name: Trivy IaC, Dockerfile, and workflow misconfiguration scan
+        id: trivy_config
+        uses: aquasecurity/trivy-action@v0.36.0
+        continue-on-error: true
+        with:
+          scan-type: "config"
+          scan-ref: "."
+          severity: ${{ inputs.security-vulnerability-severities }}
+          exit-code: "1"
+          format: "sarif"
+          output: "security-reports/trivy-config.sarif"
+          skip-dirs: ${{ inputs.security-skip-dirs }}
+          limit-severities-for-sarif: true
+          version: ${{ inputs.trivy-version }}
+          skip-setup-trivy: true
+
+      - name: Validate AWS SAM and CloudFormation templates with cfn-lint
+        id: cfn_lint
+        if: ${{ steps.security_targets.outputs.sam_templates == 'true' }}
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+
+          venv_dir="${RUNNER_TEMP:-/tmp}/cfn-lint-venv"
+          python3 -m venv "$venv_dir"
+          "$venv_dir/bin/python" -m pip install --upgrade pip
+          "$venv_dir/bin/python" -m pip install 'cfn-lint[sarif]'
+
+          mapfile -d '' templates < <(find . \
+            -type f \( -name 'template.yaml' -o -name 'template.yml' \) \
+            -not -path './node_modules/*' \
+            -not -path './.git/*' \
+            -print0)
+
+          if [[ "${#templates[@]}" -eq 0 ]]; then
+            echo "No AWS SAM/CloudFormation templates found."
+            exit 0
+          fi
+
+          "$venv_dir/bin/cfn-lint" --non-zero-exit-code error "${templates[@]}" 2>&1 | tee security-reports/cfn-lint.txt
+
+      - name: GitHub Actions security scan with zizmor
+        id: zizmor
+        if: ${{ steps.security_targets.outputs.github_actions_files == 'true' }}
+        shell: bash
+        continue-on-error: true
+        env:
+          ZIZMOR_VERSION: ${{ inputs.zizmor-version }}
+          INPUT_GITHUB_TOKEN: ${{ secrets['github-token'] }}
+        run: |
+          set -euo pipefail
+
+          docker_env=()
+          if [[ -n "${INPUT_GITHUB_TOKEN:-}" ]]; then
+            docker_env=(-e "GH_TOKEN=${INPUT_GITHUB_TOKEN}")
+          else
+            docker_env=(-e "ZIZMOR_OFFLINE=true")
+          fi
+
+          set +e
+          docker run --rm \
+            -v "$PWD:/repo:ro" \
+            -w /repo \
+            "${docker_env[@]}" \
+            "ghcr.io/zizmorcore/zizmor:${ZIZMOR_VERSION}" \
+            --persona=regular \
+            --min-severity=high \
+            --min-confidence=medium \
+            . 2>&1 | tee security-reports/zizmor.txt
+
+          status="${PIPESTATUS[0]}"
+          set -e
+
+          if [[ "$status" -eq 0 || "$status" -eq 3 ]]; then
+            exit 0
+          fi
+
+          exit "$status"
+
+      - name: Build Docker image for security scan
+        id: docker_build
+        if: ${{ steps.security_targets.outputs.root_dockerfile == 'true' }}
+        shell: bash
+        continue-on-error: true
+        env:
+          DOCKERFILE_PATH: ${{ inputs.dockerfile-path }}
+          DOCKER_BUILD_CONTEXT: ${{ inputs.docker-build-context }}
+          DOCKER_BUILD_ARGS: ${{ inputs.docker-build-args }}
+          DOCKER_IMAGE_REF: ${{ inputs.docker-image-name }}:${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          build_args=()
+          while IFS= read -r arg; do
+            [[ -z "$arg" ]] && continue
+            build_args+=(--build-arg "$arg")
+          done <<< "$DOCKER_BUILD_ARGS"
+
+          docker build \
+            -f "$DOCKERFILE_PATH" \
+            -t "$DOCKER_IMAGE_REF" \
+            "${build_args[@]}" \
+            "$DOCKER_BUILD_CONTEXT"
+
+          echo "$DOCKER_IMAGE_REF" > security-reports/docker-image-ref.txt
+
+      - name: Trivy Docker image vulnerability scan
+        id: trivy_image
+        if: ${{ steps.security_targets.outputs.root_dockerfile == 'true' && steps.docker_build.outcome == 'success' }}
+        uses: aquasecurity/trivy-action@v0.36.0
+        continue-on-error: true
+        with:
+          scan-type: "image"
+          image-ref: ${{ inputs.docker-image-name }}:${{ github.sha }}
+          scanners: "vuln"
+          vuln-type: "os,library"
+          severity: ${{ inputs.security-vulnerability-severities }}
+          ignore-unfixed: true
+          exit-code: "1"
+          format: "sarif"
+          output: "security-reports/trivy-image.sarif"
+          limit-severities-for-sarif: true
+          version: ${{ inputs.trivy-version }}
+          skip-setup-trivy: true
+
+      - name: Generate dependency license report with Trivy
+        id: trivy_license
+        uses: aquasecurity/trivy-action@v0.36.0
+        continue-on-error: true
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          scanners: "license"
+          exit-code: "0"
+          format: "table"
+          output: "security-reports/trivy-license.txt"
+          skip-dirs: ${{ inputs.security-skip-dirs }}
+          version: ${{ inputs.trivy-version }}
+          skip-setup-trivy: true
+
+      - name: Generate filesystem SBOM with Trivy
+        id: trivy_sbom
+        uses: aquasecurity/trivy-action@v0.36.0
+        continue-on-error: true
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          scanners: "vuln"
+          exit-code: "0"
+          format: "cyclonedx"
+          output: "security-reports/sbom-fs.cdx.json"
+          skip-dirs: ${{ inputs.security-skip-dirs }}
+          version: ${{ inputs.trivy-version }}
+          skip-setup-trivy: true
+
+      - name: Generate Docker image SBOM with Trivy
+        id: trivy_image_sbom
+        if: ${{ steps.security_targets.outputs.root_dockerfile == 'true' && steps.docker_build.outcome == 'success' }}
+        uses: aquasecurity/trivy-action@v0.36.0
+        continue-on-error: true
+        with:
+          scan-type: "image"
+          image-ref: ${{ inputs.docker-image-name }}:${{ github.sha }}
+          scanners: "vuln"
+          exit-code: "0"
+          format: "cyclonedx"
+          output: "security-reports/sbom-image.cdx.json"
+          version: ${{ inputs.trivy-version }}
+          skip-setup-trivy: true
+
+      - name: Post Semgrep SARIF findings in the pull request
+        if: ${{ always() && github.event_name == 'pull_request' && steps.semgrep.outcome == 'failure' && hashFiles('security-reports/semgrep.sarif') != '' }}
+        uses: meblabs/sarif-to-comment-action@v1
+        continue-on-error: true
+        with:
+          token: ${{ secrets.token }}
+          repository: ${{ github.repository }}
+          branch: ${{ github.head_ref }}
+          pr-number: ${{ github.event.pull_request.number }}
+          sarif-file: security-reports/semgrep.sarif
+          title: SAST Issues Found
+
+      - name: Post Gitleaks SARIF findings in the pull request
+        if: ${{ always() && github.event_name == 'pull_request' && steps.gitleaks.outcome == 'failure' && hashFiles('security-reports/gitleaks.sarif') != '' }}
+        uses: meblabs/sarif-to-comment-action@v1
+        continue-on-error: true
+        with:
+          token: ${{ secrets.token }}
+          repository: ${{ github.repository }}
+          branch: ${{ github.head_ref }}
+          pr-number: ${{ github.event.pull_request.number }}
+          sarif-file: security-reports/gitleaks.sarif
+          title: Secret Scanning Issues Found
+
+      - name: Post Trivy filesystem SARIF findings in the pull request
+        if: ${{ always() && github.event_name == 'pull_request' && steps.trivy_fs.outcome == 'failure' && hashFiles('security-reports/trivy-fs.sarif') != '' }}
+        uses: meblabs/sarif-to-comment-action@v1
+        continue-on-error: true
+        with:
+          token: ${{ secrets.token }}
+          repository: ${{ github.repository }}
+          branch: ${{ github.head_ref }}
+          pr-number: ${{ github.event.pull_request.number }}
+          sarif-file: security-reports/trivy-fs.sarif
+          title: Dependency Vulnerabilities Found
+
+      - name: Post Trivy config SARIF findings in the pull request
+        if: ${{ always() && github.event_name == 'pull_request' && steps.trivy_config.outcome == 'failure' && hashFiles('security-reports/trivy-config.sarif') != '' }}
+        uses: meblabs/sarif-to-comment-action@v1
+        continue-on-error: true
+        with:
+          token: ${{ secrets.token }}
+          repository: ${{ github.repository }}
+          branch: ${{ github.head_ref }}
+          pr-number: ${{ github.event.pull_request.number }}
+          sarif-file: security-reports/trivy-config.sarif
+          title: IaC and Configuration Issues Found
+
+      - name: Post Trivy Docker image SARIF findings in the pull request
+        if: ${{ always() && github.event_name == 'pull_request' && steps.trivy_image.outcome == 'failure' && hashFiles('security-reports/trivy-image.sarif') != '' }}
+        uses: meblabs/sarif-to-comment-action@v1
+        continue-on-error: true
+        with:
+          token: ${{ secrets.token }}
+          repository: ${{ github.repository }}
+          branch: ${{ github.head_ref }}
+          pr-number: ${{ github.event.pull_request.number }}
+          sarif-file: security-reports/trivy-image.sarif
+          title: Docker Image Vulnerabilities Found
+
+      - name: Publish security summary
+        if: ${{ always() }}
+        shell: bash
+        env:
+          SEMGREP_OUTCOME: ${{ steps.semgrep.outcome }}
+          GITLEAKS_OUTCOME: ${{ steps.gitleaks.outcome }}
+          TRIVY_FS_OUTCOME: ${{ steps.trivy_fs.outcome }}
+          TRIVY_CONFIG_OUTCOME: ${{ steps.trivy_config.outcome }}
+          CFN_LINT_OUTCOME: ${{ steps.cfn_lint.outcome }}
+          ZIZMOR_OUTCOME: ${{ steps.zizmor.outcome }}
+          DOCKER_BUILD_OUTCOME: ${{ steps.docker_build.outcome }}
+          TRIVY_IMAGE_OUTCOME: ${{ steps.trivy_image.outcome }}
+          TRIVY_LICENSE_OUTCOME: ${{ steps.trivy_license.outcome }}
+          TRIVY_SBOM_OUTCOME: ${{ steps.trivy_sbom.outcome }}
+          TRIVY_IMAGE_SBOM_OUTCOME: ${{ steps.trivy_image_sbom.outcome }}
+          ROOT_DOCKERFILE: ${{ steps.security_targets.outputs.root_dockerfile }}
+          SAM_TEMPLATES: ${{ steps.security_targets.outputs.sam_templates }}
+          GITHUB_ACTIONS_FILES: ${{ steps.security_targets.outputs.github_actions_files }}
+        run: |
+          set -euo pipefail
+
+          icon() {
+            case "$1" in
+              success) echo "PASS" ;;
+              failure) echo "FAIL" ;;
+              skipped) echo "SKIP" ;;
+              cancelled) echo "CANCELLED" ;;
+              *) echo "${1:-unknown}" ;;
+            esac
+          }
+
+          applicable_outcome() {
+            local outcome="$1"
+            local applicable="$2"
+
+            if [[ "$applicable" != "true" ]]; then
+              echo "SKIP - not applicable"
+              return
+            fi
+
+            icon "$outcome"
+          }
+
+          {
+            echo "## Security checks"
+            echo ""
+            echo "| Check | Outcome | Blocking |"
+            echo "|---|---:|---:|"
+            echo "| Semgrep SAST | $(icon "$SEMGREP_OUTCOME") | yes |"
+            echo "| Gitleaks secrets | $(icon "$GITLEAKS_OUTCOME") | yes |"
+            echo "| Trivy filesystem SCA | $(icon "$TRIVY_FS_OUTCOME") | yes |"
+            echo "| Trivy IaC/config misconfiguration | $(icon "$TRIVY_CONFIG_OUTCOME") | yes |"
+            echo "| cfn-lint SAM/CloudFormation validation | $(applicable_outcome "$CFN_LINT_OUTCOME" "$SAM_TEMPLATES") | yes if templates exist |"
+            echo "| zizmor GitHub Actions security | $(applicable_outcome "$ZIZMOR_OUTCOME" "$GITHUB_ACTIONS_FILES") | yes if workflow/action files exist |"
+            echo "| Docker image build | $(applicable_outcome "$DOCKER_BUILD_OUTCOME" "$ROOT_DOCKERFILE") | yes if Dockerfile exists |"
+            echo "| Trivy Docker image scan | $(applicable_outcome "$TRIVY_IMAGE_OUTCOME" "$ROOT_DOCKERFILE") | yes if Dockerfile exists |"
+            echo "| Trivy license report | $(icon "$TRIVY_LICENSE_OUTCOME") | no |"
+            echo "| Trivy filesystem SBOM | $(icon "$TRIVY_SBOM_OUTCOME") | no |"
+            echo "| Trivy Docker image SBOM | $(applicable_outcome "$TRIVY_IMAGE_SBOM_OUTCOME" "$ROOT_DOCKERFILE") | no |"
+            echo ""
+            echo "Reports are available in the security-reports artifact."
+            echo ""
+          } | tee -a security-reports/security-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+          append_details() {
+            local title="$1"
+            local file="$2"
+
+            if [[ -s "$file" ]]; then
+              {
+                echo "<details><summary>${title}</summary>"
+                echo ""
+                echo '```text'
+                sed -n '1,200p' "$file"
+                echo '```'
+                echo "</details>"
+                echo ""
+              } | tee -a security-reports/security-summary.md >> "$GITHUB_STEP_SUMMARY"
+            fi
+          }
+
+          append_details "cfn-lint output" security-reports/cfn-lint.txt
+          append_details "zizmor output" security-reports/zizmor.txt
+
+      - name: Post security summary in the pull request
+        if: ${{ always() && inputs.post-pr-comment && github.event_name == 'pull_request' }}
+        uses: actions/github-script@v9
+        continue-on-error: true
+        env:
+          SEMGREP_OUTCOME: ${{ steps.semgrep.outcome }}
+          GITLEAKS_OUTCOME: ${{ steps.gitleaks.outcome }}
+          TRIVY_FS_OUTCOME: ${{ steps.trivy_fs.outcome }}
+          TRIVY_CONFIG_OUTCOME: ${{ steps.trivy_config.outcome }}
+          CFN_LINT_OUTCOME: ${{ steps.cfn_lint.outcome }}
+          ZIZMOR_OUTCOME: ${{ steps.zizmor.outcome }}
+          DOCKER_BUILD_OUTCOME: ${{ steps.docker_build.outcome }}
+          TRIVY_IMAGE_OUTCOME: ${{ steps.trivy_image.outcome }}
+          TRIVY_LICENSE_OUTCOME: ${{ steps.trivy_license.outcome }}
+          TRIVY_SBOM_OUTCOME: ${{ steps.trivy_sbom.outcome }}
+          TRIVY_IMAGE_SBOM_OUTCOME: ${{ steps.trivy_image_sbom.outcome }}
+          ROOT_DOCKERFILE: ${{ steps.security_targets.outputs.root_dockerfile }}
+          SAM_TEMPLATES: ${{ steps.security_targets.outputs.sam_templates }}
+          GITHUB_ACTIONS_FILES: ${{ steps.security_targets.outputs.github_actions_files }}
+          SCANNED_REF: ${{ inputs.ref }}
+        with:
+          github-token: ${{ secrets.token }}
+          script: |
+            const marker = '<!-- meblabs-security-workflow:summary -->';
+
+            const normalize = (outcome, applicable = true) => {
+              if (!applicable) return 'SKIP - not applicable';
+              if (!outcome) return 'SKIP';
+              if (outcome === 'success') return 'PASS';
+              if (outcome === 'failure') return 'FAIL';
+              if (outcome === 'skipped') return 'SKIP';
+              if (outcome === 'cancelled') return 'CANCELLED';
+              return outcome;
+            };
+
+            const rootDockerfile = process.env.ROOT_DOCKERFILE === 'true';
+            const samTemplates = process.env.SAM_TEMPLATES === 'true';
+            const githubActionsFiles = process.env.GITHUB_ACTIONS_FILES === 'true';
+
+            const rows = [
+              ['Semgrep SAST', normalize(process.env.SEMGREP_OUTCOME), 'yes'],
+              ['Gitleaks secrets', normalize(process.env.GITLEAKS_OUTCOME), 'yes'],
+              ['Trivy filesystem SCA', normalize(process.env.TRIVY_FS_OUTCOME), 'yes'],
+              ['Trivy IaC/config misconfiguration', normalize(process.env.TRIVY_CONFIG_OUTCOME), 'yes'],
+              ['cfn-lint SAM/CloudFormation validation', normalize(process.env.CFN_LINT_OUTCOME, samTemplates), 'yes if templates exist'],
+              ['zizmor GitHub Actions security', normalize(process.env.ZIZMOR_OUTCOME, githubActionsFiles), 'yes if workflow/action files exist'],
+              ['Docker image build', normalize(process.env.DOCKER_BUILD_OUTCOME, rootDockerfile), 'yes if Dockerfile exists'],
+              ['Trivy Docker image scan', normalize(process.env.TRIVY_IMAGE_OUTCOME, rootDockerfile), 'yes if Dockerfile exists'],
+              ['Trivy license report', normalize(process.env.TRIVY_LICENSE_OUTCOME), 'no'],
+              ['Trivy filesystem SBOM', normalize(process.env.TRIVY_SBOM_OUTCOME), 'no'],
+              ['Trivy Docker image SBOM', normalize(process.env.TRIVY_IMAGE_SBOM_OUTCOME, rootDockerfile), 'no'],
+            ];
+
+            const hasBlockingFailure = rows.some(([, outcome, blocking]) => {
+              if (!blocking.startsWith('yes')) return false;
+              return outcome !== 'PASS' && outcome !== 'SKIP - not applicable';
+            });
+
+            const body = [
+              marker,
+              '### Security',
+              '',
+              `Scanned ref: \`${process.env.SCANNED_REF}\``,
+              '',
+              hasBlockingFailure
+                ? 'One or more blocking security checks failed. Review the SARIF comments and the `security-reports` artifact before merging.'
+                : 'All applicable blocking security checks passed.',
+              '',
+              '| Check | Outcome | Blocking |',
+              '|---|---:|---:|',
+              ...rows.map(([name, outcome, blocking]) => `| ${name} | ${outcome} | ${blocking} |`),
+            ].join('\n');
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+
+            const previous = comments.find((comment) => comment.body?.includes(marker));
+
+            if (previous) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: previous.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body,
+              });
+            }
+
+      - name: Upload security reports
+        if: ${{ always() && inputs.upload-artifact }}
+        uses: actions/upload-artifact@v7
+        continue-on-error: true
+        with:
+          name: security-reports
+          path: security-reports
+          if-no-files-found: ignore
+          retention-days: ${{ inputs.artifact-retention-days }}
+
+      - name: Fail security gate if blocking checks failed
+        if: ${{ always() }}
+        shell: bash
+        env:
+          SEMGREP_OUTCOME: ${{ steps.semgrep.outcome }}
+          GITLEAKS_OUTCOME: ${{ steps.gitleaks.outcome }}
+          TRIVY_FS_OUTCOME: ${{ steps.trivy_fs.outcome }}
+          TRIVY_CONFIG_OUTCOME: ${{ steps.trivy_config.outcome }}
+          CFN_LINT_OUTCOME: ${{ steps.cfn_lint.outcome }}
+          ZIZMOR_OUTCOME: ${{ steps.zizmor.outcome }}
+          DOCKER_BUILD_OUTCOME: ${{ steps.docker_build.outcome }}
+          TRIVY_IMAGE_OUTCOME: ${{ steps.trivy_image.outcome }}
+          ROOT_DOCKERFILE: ${{ steps.security_targets.outputs.root_dockerfile }}
+          SAM_TEMPLATES: ${{ steps.security_targets.outputs.sam_templates }}
+          GITHUB_ACTIONS_FILES: ${{ steps.security_targets.outputs.github_actions_files }}
+        run: |
+          set -euo pipefail
+
+          failed=0
+
+          check_required() {
+            local name="$1"
+            local outcome="$2"
+            local applicable="$3"
+
+            if [[ "$applicable" != "true" ]]; then
+              echo "SKIP: ${name} is not applicable."
+              return
+            fi
+
+            case "$outcome" in
+              success)
+                echo "PASS: ${name}"
+                ;;
+              failure|cancelled|timed_out|action_required)
+                echo "FAIL: ${name} ended with outcome '${outcome}'."
+                failed=1
+                ;;
+              skipped)
+                echo "FAIL: ${name} was skipped but is applicable."
+                failed=1
+                ;;
+              *)
+                echo "FAIL: ${name} has unknown outcome '${outcome:-empty}'."
+                failed=1
+                ;;
+            esac
+          }
+
+          check_required "Semgrep SAST" "$SEMGREP_OUTCOME" "true"
+          check_required "Gitleaks secrets" "$GITLEAKS_OUTCOME" "true"
+          check_required "Trivy filesystem SCA" "$TRIVY_FS_OUTCOME" "true"
+          check_required "Trivy IaC/config misconfiguration" "$TRIVY_CONFIG_OUTCOME" "true"
+          check_required "cfn-lint SAM/CloudFormation validation" "$CFN_LINT_OUTCOME" "$SAM_TEMPLATES"
+          check_required "zizmor GitHub Actions security" "$ZIZMOR_OUTCOME" "$GITHUB_ACTIONS_FILES"
+          check_required "Docker image build" "$DOCKER_BUILD_OUTCOME" "$ROOT_DOCKERFILE"
+          check_required "Trivy Docker image scan" "$TRIVY_IMAGE_OUTCOME" "$ROOT_DOCKERFILE"
+
+          if [[ "$failed" -ne 0 ]]; then
+            echo "Security gate failed."
+            exit 1
+          fi
+
+          echo "Security gate passed."
