@@ -283,6 +283,9 @@ fi
 
 security_workflow_write_summary
 
+security_workflow_log ""
+security_workflow_log "==> Security gate summary"
+
 set +e
 security_workflow_gate
 gate_status="$?"

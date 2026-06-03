@@ -259,7 +259,7 @@ Run the local security gate:
 npm run security
 ```
 
-Console results use green `PASS`, red `FAIL`, and yellow `SKIP` labels when ANSI colors are supported. Set `NO_COLOR=1` to disable colors or `SECURITY_WORKFLOW_FORCE_COLOR=true` / `FORCE_COLOR=1` to force them through npm or non-TTY output.
+Console results use green `PASS`, red `FAIL`, and yellow `SKIP` labels by default. Set `NO_COLOR=1` or `SECURITY_WORKFLOW_COLOR=never` to disable colors.
 
 Pass CLI options after `--`:
 

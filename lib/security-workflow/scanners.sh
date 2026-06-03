@@ -180,8 +180,8 @@ security_workflow_cfn_lint() {
   fi
 
   python3 -m venv "$venv_dir"
-  "$venv_dir/bin/python" -m pip install --upgrade pip
-  "$venv_dir/bin/python" -m pip install 'cfn-lint[sarif]'
+  "$venv_dir/bin/python" -m pip install --quiet --upgrade pip
+  "$venv_dir/bin/python" -m pip install --quiet 'cfn-lint[sarif]'
 
   local templates=()
   local template

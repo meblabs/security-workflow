@@ -13,15 +13,20 @@ security_workflow_error() {
 }
 
 security_workflow_color_enabled() {
-  case "${SECURITY_WORKFLOW_FORCE_COLOR:-${FORCE_COLOR:-}}" in
-    1|true|yes|on) return 0 ;;
-  esac
-
   if [[ -n "${NO_COLOR:-}" ]]; then
     return 1
   fi
 
-  [[ -t 1 ]]
+  case "${SECURITY_WORKFLOW_COLOR:-}" in
+    0|false|never|no|off) return 1 ;;
+    1|true|always|yes|on) return 0 ;;
+  esac
+
+  case "${SECURITY_WORKFLOW_FORCE_COLOR:-${FORCE_COLOR:-}}" in
+    1|true|yes|on) return 0 ;;
+  esac
+
+  return 0
 }
 
 security_workflow_color() {
