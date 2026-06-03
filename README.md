@@ -17,8 +17,7 @@ The workflow currently covers:
 - Optional Docker image build and Trivy image vulnerability scan.
 - Filesystem and Docker image CycloneDX SBOM generation.
 - Dependency license report.
-- Pull request SARIF comments for scanner failures.
-- Consolidated pull request security summary.
+- One consolidated pull request security summary with failure details.
 - `security-reports` artifact upload.
 - Final security gate after all reports are collected.
 
@@ -134,18 +133,17 @@ It generates a CycloneDX SBOM for the locally built image and writes `security-r
 
 ### Pull Request Reporting
 
-When the workflow runs on a pull request, it can publish two kinds of comments using the bot `token`:
+When the workflow runs on a pull request, it publishes one consolidated summary comment using the bot `token`. The comment is marked with `<!-- meblabs-security-workflow:summary -->`.
 
-- Scanner-specific SARIF comments for Semgrep, Gitleaks, Trivy filesystem, Trivy config, and Trivy image failures.
-- One consolidated summary comment marked with `<!-- meblabs-security-workflow:summary -->`.
-
-Scanner-specific comments are created only when the scanner produced a SARIF file and the step failed. `cfn-lint` and `zizmor` produce text reports, so their output is included in the consolidated comment and in the `security-reports` artifact instead of separate SARIF comments.
+The consolidated comment includes the check table and expandable details for scanner failures. SARIF-producing scanners are summarized from their SARIF files, including rule, level, source location, message, and help link where available. `cfn-lint` and `zizmor` text output is also included in expandable sections.
 
 The consolidated comment is idempotent: the workflow updates the previous marked comment instead of creating a new one on every run. Its table has only `Check` and `Outcome` columns. Outcomes are rendered as green `PASS`, red `FAIL`, or grey `NA` badges. `NA` means that the check was not applicable to the scanned repository, for example Docker image scanning when the configured Dockerfile does not exist.
 
+GitHub issue comments have a maximum body size. The workflow includes failure details directly in the PR comment under normal report sizes and truncates oversized sections with a note if needed. The comment links the uploaded `security-reports` artifact so the full files remain one click away.
+
 ### Artifact And Step Summary
 
-The workflow always prepares `security-reports/security-summary.md` and writes a security table to the GitHub Step Summary. The Step Summary uses the same `PASS`, `FAIL`, and `NA` outcomes as the PR comment. When `upload-artifact` is enabled, it uploads the full `security-reports` directory as the `security-reports` artifact.
+The workflow always prepares `security-reports/security-summary.md` and writes a security table to the GitHub Step Summary. The Step Summary uses the same `PASS`, `FAIL`, and `NA` outcomes as the PR comment. When `upload-artifact` is enabled, it uploads the full `security-reports` directory as the `security-reports` artifact and links it from the PR comment.
 
 Artifact upload and PR comments are non-blocking. They use `continue-on-error: true` so report publication problems do not hide scanner outcomes.
 
@@ -177,7 +175,7 @@ This workflow uses two reusable workflow secrets with separate responsibilities:
 
 | Purpose | Secret | Required | Recommended value |
 |---|---|---:|---|
-| Pull request SARIF comments and consolidated PR summary comments | `token` | yes | `${{ secrets.MEBBOT }}` |
+| Consolidated PR summary comments | `token` | yes | `${{ secrets.MEBBOT }}` |
 | Checkout and read/API-backed scanner checks such as authenticated `zizmor` runs | `github-token` | yes | `${{ secrets.GITHUB_TOKEN }}` |
 
 Use the same bot fine-grained PAT or GitHub App token used by `meblabs/npm-pull-request-action` for `token`. Use the default `GITHUB_TOKEN` for `github-token`, because checkout and read-oriented scanner API calls do not need the bot PAT.
@@ -199,10 +197,10 @@ Minimum recommended fine-grained PAT repository permissions for `MEBBOT` in this
 | Permission | Access | Used for |
 |---|---|---|
 | Metadata | Read | Required by GitHub for repository access. |
-| Pull requests | Read and write | Create or update pull request review/SARIF comments. |
+| Pull requests | Read and write | Read pull request metadata when needed by the bot token. |
 | Issues | Read and write | Create or update the consolidated PR summary comment, because PR conversation comments use the Issues API. |
 
-This workflow does not need the `MEBBOT` PAT to have access to contents, actions, commit statuses, checks, discussions, merge queues, repository advisories, secrets, workflows, administration, or security events. `security-events: write` is only needed if a future version uploads SARIF into GitHub code scanning instead of only storing SARIF as artifacts and PR comments.
+This workflow does not need the `MEBBOT` PAT to have access to contents, actions, commit statuses, checks, discussions, merge queues, repository advisories, secrets, workflows, administration, or security events. `security-events: write` is only needed if a future version uploads SARIF into GitHub code scanning instead of only storing SARIF as artifacts and summarizing it in the PR comment.
 
 ## Usage Standalone
 
@@ -314,7 +312,7 @@ The GitHub Step Summary receives the same security table as the artifact summary
 <!-- meblabs-security-workflow:summary -->
 ```
 
-SARIF failure comments are posted through `meblabs/sarif-to-comment-action@v1` when a scanner fails and the corresponding SARIF file exists.
+Scanner details are included in that single consolidated comment. SARIF files are parsed into `security-reports/sarif-findings-summary.md`, and text reports such as `cfn-lint.txt` and `zizmor.txt` are attached as expandable sections.
 
 ## Failure Policy
 
