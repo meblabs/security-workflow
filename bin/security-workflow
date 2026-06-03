@@ -43,6 +43,8 @@ Options:
   --docker-build-args VALUE                Newline-separated Docker build args.
   --docker-image-name NAME                 Local Docker image name.
   --github-token TOKEN                     Token used by zizmor API-backed checks.
+  --only LIST                              Comma-separated checks/groups to run.
+  --skip LIST                              Comma-separated checks/groups to skip.
   --no-docker-image                        Skip Docker build, image scan, image SBOM.
   --no-license                             Skip Trivy license report.
   --no-sbom                                Skip filesystem and image SBOM generation.
@@ -124,6 +126,14 @@ while [[ "$#" -gt 0 ]]; do
       SECURITY_WORKFLOW_GITHUB_TOKEN="$2"
       shift 2
       ;;
+    --only)
+      SECURITY_WORKFLOW_ONLY_CHECKS="$2"
+      shift 2
+      ;;
+    --skip)
+      SECURITY_WORKFLOW_SKIP_CHECKS="$2"
+      shift 2
+      ;;
     --no-docker-image)
       SECURITY_WORKFLOW_DOCKER_IMAGE_ENABLED=false
       shift
@@ -160,6 +170,14 @@ cd "$SECURITY_WORKFLOW_REPO"
 security_workflow_prepare_reports
 security_workflow_detect_targets
 
+SECURITY_WORKFLOW_ONLY_CHECKS_EXPANDED=()
+SECURITY_WORKFLOW_SKIP_CHECKS_EXPANDED=()
+security_workflow_parse_check_selectors "$SECURITY_WORKFLOW_ONLY_CHECKS" SECURITY_WORKFLOW_ONLY_CHECKS_EXPANDED
+security_workflow_parse_check_selectors "$SECURITY_WORKFLOW_SKIP_CHECKS" SECURITY_WORKFLOW_SKIP_CHECKS_EXPANDED
+security_workflow_validate_check_selectors
+security_workflow_add_implicit_check_dependencies
+security_workflow_log_selection
+
 if [[ "$SECURITY_WORKFLOW_DOCKER_IMAGE_ENABLED" != "true" ]]; then
   ROOT_DOCKERFILE=false
 fi
@@ -179,50 +197,71 @@ TRIVY_SBOM_OUTCOME=skipped
 TRIVY_IMAGE_SBOM_OUTCOME=skipped
 SECURITY_GATE_OUTCOME=failure
 
-security_workflow_run_step SEMGREP_OUTCOME "Semgrep SAST" security_workflow_semgrep
-security_workflow_run_step GITLEAKS_OUTCOME "Gitleaks secrets" security_workflow_gitleaks
-security_workflow_run_step TRIVY_FS_OUTCOME "Trivy filesystem SCA" security_workflow_trivy_fs
-security_workflow_run_step TRIVY_CONFIG_OUTCOME "Trivy IaC/config misconfiguration" security_workflow_trivy_config
+if security_workflow_check_enabled semgrep; then
+  security_workflow_run_step SEMGREP_OUTCOME "Semgrep SAST" security_workflow_semgrep
+else
+  SEMGREP_OUTCOME=na
+fi
 
-if [[ "$SAM_TEMPLATES" == "true" ]]; then
+if security_workflow_check_enabled gitleaks; then
+  security_workflow_run_step GITLEAKS_OUTCOME "Gitleaks secrets" security_workflow_gitleaks
+else
+  GITLEAKS_OUTCOME=na
+fi
+
+if security_workflow_check_enabled trivy-fs; then
+  security_workflow_run_step TRIVY_FS_OUTCOME "Trivy filesystem SCA" security_workflow_trivy_fs
+else
+  TRIVY_FS_OUTCOME=na
+fi
+
+if security_workflow_check_enabled trivy-config; then
+  security_workflow_run_step TRIVY_CONFIG_OUTCOME "Trivy IaC/config misconfiguration" security_workflow_trivy_config
+else
+  TRIVY_CONFIG_OUTCOME=na
+fi
+
+if [[ "$SAM_TEMPLATES" == "true" ]] && security_workflow_check_enabled cfn-lint; then
   security_workflow_run_step CFN_LINT_OUTCOME "cfn-lint SAM/CloudFormation validation" security_workflow_cfn_lint
 else
   CFN_LINT_OUTCOME=na
 fi
 
-if [[ "$GITHUB_ACTIONS_FILES" == "true" ]]; then
+if [[ "$GITHUB_ACTIONS_FILES" == "true" ]] && security_workflow_check_enabled zizmor; then
   security_workflow_run_step ZIZMOR_OUTCOME "zizmor GitHub Actions security" security_workflow_zizmor
 else
   ZIZMOR_OUTCOME=na
 fi
 
-if [[ "$ROOT_DOCKERFILE" == "true" ]]; then
+if [[ "$ROOT_DOCKERFILE" == "true" ]] && security_workflow_check_enabled docker-build; then
   security_workflow_run_step DOCKER_BUILD_OUTCOME "Docker image build" security_workflow_docker_build
-  if [[ "$DOCKER_BUILD_OUTCOME" == "success" ]]; then
+  if [[ "$DOCKER_BUILD_OUTCOME" == "success" ]] && security_workflow_check_enabled trivy-image; then
     security_workflow_run_step TRIVY_IMAGE_OUTCOME "Trivy Docker image scan" security_workflow_trivy_image
-  else
+  elif security_workflow_check_enabled trivy-image; then
     TRIVY_IMAGE_OUTCOME=skipped
+  else
+    TRIVY_IMAGE_OUTCOME=na
   fi
 else
   DOCKER_BUILD_OUTCOME=na
   TRIVY_IMAGE_OUTCOME=na
 fi
 
-if [[ "$SECURITY_WORKFLOW_LICENSE_ENABLED" == "true" ]]; then
+if [[ "$SECURITY_WORKFLOW_LICENSE_ENABLED" == "true" ]] && security_workflow_check_enabled license; then
   security_workflow_run_step TRIVY_LICENSE_OUTCOME "Trivy license report" security_workflow_trivy_license
 else
   TRIVY_LICENSE_OUTCOME=na
 fi
 
-if [[ "$SECURITY_WORKFLOW_SBOM_ENABLED" == "true" ]]; then
+if [[ "$SECURITY_WORKFLOW_SBOM_ENABLED" == "true" ]] && security_workflow_check_enabled sbom-fs; then
   security_workflow_run_step TRIVY_SBOM_OUTCOME "Trivy filesystem SBOM" security_workflow_trivy_sbom
 else
   TRIVY_SBOM_OUTCOME=na
 fi
 
-if [[ "$SECURITY_WORKFLOW_SBOM_ENABLED" == "true" && "$ROOT_DOCKERFILE" == "true" && "$DOCKER_BUILD_OUTCOME" == "success" ]]; then
+if [[ "$SECURITY_WORKFLOW_SBOM_ENABLED" == "true" && "$ROOT_DOCKERFILE" == "true" && "$DOCKER_BUILD_OUTCOME" == "success" ]] && security_workflow_check_enabled sbom-image; then
   security_workflow_run_step TRIVY_IMAGE_SBOM_OUTCOME "Trivy Docker image SBOM" security_workflow_trivy_image_sbom
-elif [[ "$ROOT_DOCKERFILE" == "true" ]]; then
+elif [[ "$ROOT_DOCKERFILE" == "true" ]] && security_workflow_check_enabled sbom-image; then
   TRIVY_IMAGE_SBOM_OUTCOME=skipped
 else
   TRIVY_IMAGE_SBOM_OUTCOME=na

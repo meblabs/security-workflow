@@ -17,6 +17,10 @@ security_workflow_check_required() {
       echo "$(security_workflow_pass_label): ${name}"
       return 0
       ;;
+    na)
+      echo "$(security_workflow_skip_label): ${name} is not applicable."
+      return 0
+      ;;
     failure|cancelled|timed_out|action_required)
       echo "$(security_workflow_fail_label): ${name} ended with outcome '${outcome}'."
       return 1

@@ -267,6 +267,35 @@ Pass CLI options after `--`:
 npm run security -- --security-severity-threshold medium
 ```
 
+Run only selected local checks while iterating on a specific class of findings:
+
+```bash
+npm run security -- --only semgrep,gitleaks
+npm run security -- --only trivy-fs,trivy-config
+npm run security -- --only docker
+npm run security -- --skip docker,sbom,license
+```
+
+`--only` and `--skip` accept comma-separated check names or groups:
+
+| Selector | Runs or skips |
+|---|---|
+| `semgrep` | Semgrep SAST |
+| `gitleaks` | Gitleaks secrets |
+| `trivy-fs` | Trivy filesystem vulnerability scan |
+| `trivy-config` | Trivy IaC/config misconfiguration scan |
+| `cfn-lint` | AWS SAM/CloudFormation validation |
+| `zizmor` | GitHub Actions security scan |
+| `docker-build` | Docker image build |
+| `trivy-image` | Trivy Docker image vulnerability scan |
+| `license` | Trivy license report |
+| `sbom` | Filesystem and Docker image SBOM |
+| `docker` | Docker build, image scan, and image SBOM |
+| `trivy` | All Trivy-backed checks and reports |
+| `all` | Every local check |
+
+When a check is excluded by `--only` or `--skip`, it is reported as `NA` and does not fail the local gate. GitHub Actions does not pass these options, so pull requests still run the full security gate.
+
 Use the same tag locally and in GitHub Actions. For example, if the pull request workflow uses:
 
 ```yml

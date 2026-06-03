@@ -86,6 +86,152 @@ security_workflow_csv_to_flags() {
   IFS="$old_ifs"
 }
 
+security_workflow_check_in_list() {
+  local wanted="$1"
+  shift
+
+  local item
+  for item in "$@"; do
+    if [[ "$item" == "$wanted" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+security_workflow_only_checks_count() {
+  local count=0
+  local check
+  for check in "${SECURITY_WORKFLOW_ONLY_CHECKS_EXPANDED[@]+"${SECURITY_WORKFLOW_ONLY_CHECKS_EXPANDED[@]}"}"; do
+    count=$((count + 1))
+  done
+  printf '%s\n' "$count"
+}
+
+security_workflow_skip_checks_count() {
+  local count=0
+  local check
+  for check in "${SECURITY_WORKFLOW_SKIP_CHECKS_EXPANDED[@]+"${SECURITY_WORKFLOW_SKIP_CHECKS_EXPANDED[@]}"}"; do
+    count=$((count + 1))
+  done
+  printf '%s\n' "$count"
+}
+
+security_workflow_expand_check_selector() {
+  local selector="$1"
+
+  case "$selector" in
+    all)
+      printf '%s\n' semgrep gitleaks trivy-fs trivy-config cfn-lint zizmor docker-build trivy-image license sbom-fs sbom-image
+      ;;
+    trivy)
+      printf '%s\n' trivy-fs trivy-config trivy-image license sbom-fs sbom-image
+      ;;
+    docker)
+      printf '%s\n' docker-build trivy-image sbom-image
+      ;;
+    sbom)
+      printf '%s\n' sbom-fs sbom-image
+      ;;
+    trivy-sbom)
+      printf '%s\n' sbom-fs sbom-image
+      ;;
+    *)
+      printf '%s\n' "$selector"
+      ;;
+  esac
+}
+
+security_workflow_parse_check_selectors() {
+  local raw="$1"
+  local output_var="$2"
+  local expanded=()
+  local old_ifs="$IFS"
+  local selector
+  local check
+
+  IFS=','
+  for selector in $raw; do
+    selector="$(printf '%s' "$selector" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [[ -z "$selector" ]] && continue
+
+    while IFS= read -r check; do
+      [[ -z "$check" ]] && continue
+      expanded+=("$check")
+    done < <(security_workflow_expand_check_selector "$selector")
+  done
+  IFS="$old_ifs"
+
+  eval "$output_var=()"
+  for check in "${expanded[@]+"${expanded[@]}"}"; do
+    eval "$output_var+=(\"\$check\")"
+  done
+}
+
+security_workflow_validate_check_selectors() {
+  local check
+
+  for check in "${SECURITY_WORKFLOW_ONLY_CHECKS_EXPANDED[@]+"${SECURITY_WORKFLOW_ONLY_CHECKS_EXPANDED[@]}"}" "${SECURITY_WORKFLOW_SKIP_CHECKS_EXPANDED[@]+"${SECURITY_WORKFLOW_SKIP_CHECKS_EXPANDED[@]}"}"; do
+    [[ -z "$check" ]] && continue
+    case "$check" in
+      semgrep|gitleaks|trivy-fs|trivy-config|cfn-lint|zizmor|docker-build|trivy-image|license|sbom-fs|sbom-image)
+        ;;
+      *)
+        security_workflow_error "Unknown check selector: $check"
+        security_workflow_error "Use one of: semgrep, gitleaks, trivy-fs, trivy-config, cfn-lint, zizmor, docker-build, trivy-image, license, sbom, sbom-fs, sbom-image, docker, trivy, all."
+        return 2
+        ;;
+    esac
+  done
+}
+
+security_workflow_add_implicit_check_dependencies() {
+  if [[ "$(security_workflow_only_checks_count)" -eq 0 ]]; then
+    return
+  fi
+
+  if security_workflow_check_in_list trivy-image "${SECURITY_WORKFLOW_ONLY_CHECKS_EXPANDED[@]+"${SECURITY_WORKFLOW_ONLY_CHECKS_EXPANDED[@]}"}" || security_workflow_check_in_list sbom-image "${SECURITY_WORKFLOW_ONLY_CHECKS_EXPANDED[@]+"${SECURITY_WORKFLOW_ONLY_CHECKS_EXPANDED[@]}"}"; then
+    if ! security_workflow_check_in_list docker-build "${SECURITY_WORKFLOW_ONLY_CHECKS_EXPANDED[@]+"${SECURITY_WORKFLOW_ONLY_CHECKS_EXPANDED[@]}"}"; then
+      SECURITY_WORKFLOW_ONLY_CHECKS_EXPANDED+=(docker-build)
+    fi
+  fi
+}
+
+security_workflow_check_enabled() {
+  local check="$1"
+
+  if [[ "$(security_workflow_only_checks_count)" -gt 0 ]] && ! security_workflow_check_in_list "$check" "${SECURITY_WORKFLOW_ONLY_CHECKS_EXPANDED[@]+"${SECURITY_WORKFLOW_ONLY_CHECKS_EXPANDED[@]}"}"; then
+    return 1
+  fi
+
+  if [[ "$(security_workflow_skip_checks_count)" -gt 0 ]] && security_workflow_check_in_list "$check" "${SECURITY_WORKFLOW_SKIP_CHECKS_EXPANDED[@]+"${SECURITY_WORKFLOW_SKIP_CHECKS_EXPANDED[@]}"}"; then
+    return 1
+  fi
+
+  return 0
+}
+
+security_workflow_log_selection() {
+  local summary="$SECURITY_WORKFLOW_REPORTS_DIR/security-summary.md"
+
+  if [[ -z "$SECURITY_WORKFLOW_ONLY_CHECKS" && -z "$SECURITY_WORKFLOW_SKIP_CHECKS" ]]; then
+    return
+  fi
+
+  {
+    echo "## Local check selection"
+    echo ""
+    if [[ -n "$SECURITY_WORKFLOW_ONLY_CHECKS" ]]; then
+      echo "- Only: ${SECURITY_WORKFLOW_ONLY_CHECKS}"
+    fi
+    if [[ -n "$SECURITY_WORKFLOW_SKIP_CHECKS" ]]; then
+      echo "- Skip: ${SECURITY_WORKFLOW_SKIP_CHECKS}"
+    fi
+    echo ""
+  } >> "$summary"
+}
+
 security_workflow_prepare_reports() {
   if [[ -z "${SECURITY_WORKFLOW_REPORTS_DIR:-}" || "$SECURITY_WORKFLOW_REPORTS_DIR" == "/" ]]; then
     security_workflow_error "Invalid reports directory: ${SECURITY_WORKFLOW_REPORTS_DIR:-empty}"
