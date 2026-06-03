@@ -136,6 +136,7 @@ security_workflow_trivy_fs() {
     -v "$SECURITY_WORKFLOW_REPORTS_DIR:/reports" \
     "$(security_workflow_trivy_docker_image)" \
     fs /repo \
+    --skip-version-check \
     --scanners vuln \
     --pkg-types os,library \
     --severity "$SECURITY_WORKFLOW_SECURITY_VULNERABILITY_SEVERITIES" \
@@ -161,6 +162,7 @@ security_workflow_trivy_config() {
     -v "$SECURITY_WORKFLOW_REPORTS_DIR:/reports" \
     "$(security_workflow_trivy_docker_image)" \
     config /repo \
+    --skip-version-check \
     --severity "$SECURITY_WORKFLOW_SECURITY_VULNERABILITY_SEVERITIES" \
     --exit-code 1 \
     --format sarif \
@@ -264,6 +266,7 @@ security_workflow_trivy_image() {
     -v /var/run/docker.sock:/var/run/docker.sock \
     "$(security_workflow_trivy_docker_image)" \
     image "$SECURITY_WORKFLOW_DOCKER_IMAGE_REF" \
+    --skip-version-check \
     --scanners vuln \
     --pkg-types os,library \
     --severity "$SECURITY_WORKFLOW_SECURITY_VULNERABILITY_SEVERITIES" \
@@ -287,6 +290,7 @@ security_workflow_trivy_license() {
     -v "$SECURITY_WORKFLOW_REPORTS_DIR:/reports" \
     "$(security_workflow_trivy_docker_image)" \
     fs /repo \
+    --skip-version-check \
     --scanners license \
     --exit-code 0 \
     --format table \
@@ -308,6 +312,7 @@ security_workflow_trivy_sbom() {
     -v "$SECURITY_WORKFLOW_REPORTS_DIR:/reports" \
     "$(security_workflow_trivy_docker_image)" \
     fs /repo \
+    --skip-version-check \
     --scanners vuln \
     --exit-code 0 \
     --format cyclonedx \
@@ -323,6 +328,7 @@ security_workflow_trivy_image_sbom() {
     -v /var/run/docker.sock:/var/run/docker.sock \
     "$(security_workflow_trivy_docker_image)" \
     image "$SECURITY_WORKFLOW_DOCKER_IMAGE_REF" \
+    --skip-version-check \
     --scanners vuln \
     --exit-code 0 \
     --format cyclonedx \

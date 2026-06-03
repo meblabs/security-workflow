@@ -34,7 +34,7 @@ Options:
   --security-vulnerability-severities CSV  Trivy severities. Default: HIGH,CRITICAL
   --security-skip-dirs CSV                 Directories skipped by Trivy scans.
   --semgrep-version VERSION                Semgrep Docker tag. Default: latest
-  --trivy-version VERSION                  Trivy Docker tag. Default: v0.70.0
+  --trivy-version VERSION                  Trivy Docker tag. Default: v0.71.0
   --gitleaks-version VERSION               Gitleaks Docker tag. Default: v8.30.1
   --zizmor-version VERSION                 zizmor Docker tag. Default: v1.25.2
   --dockerfile-path PATH                   Dockerfile path. Default: Dockerfile

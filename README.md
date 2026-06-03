@@ -158,7 +158,7 @@ Artifact upload and PR comments are non-blocking. They use `continue-on-error: t
 | `security-vulnerability-severities` | no | `HIGH,CRITICAL` | Comma-separated Trivy severities that fail the gate. |
 | `security-skip-dirs` | no | `node_modules,.git,.security-workflow,security-reports,coverage,dist,build,.next,.nuxt` | Directories skipped by Trivy filesystem and config scans. |
 | `semgrep-version` | no | `latest` | Semgrep Docker image tag. |
-| `trivy-version` | no | `v0.70.0` | Trivy CLI version used by `aquasecurity/trivy-action`. |
+| `trivy-version` | no | `v0.71.0` | Trivy CLI version used by the local Trivy Docker image. |
 | `gitleaks-version` | no | `v8.30.1` | Gitleaks Docker image tag. |
 | `zizmor-version` | no | `v1.25.2` | zizmor Docker image tag. |
 | `dockerfile-path` | no | `Dockerfile` | Dockerfile path used for optional Docker image build and scan. |
@@ -258,6 +258,8 @@ Run the local security gate:
 ```bash
 npm run security
 ```
+
+Console results use green `PASS`, red `FAIL`, and yellow `SKIP` labels when ANSI colors are supported. Set `NO_COLOR=1` to disable colors or `SECURITY_WORKFLOW_FORCE_COLOR=true` / `FORCE_COLOR=1` to force them through npm or non-TTY output.
 
 Pass CLI options after `--`:
 

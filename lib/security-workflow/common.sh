@@ -12,6 +12,47 @@ security_workflow_error() {
   printf 'ERROR: %s\n' "$*" >&2
 }
 
+security_workflow_color_enabled() {
+  case "${SECURITY_WORKFLOW_FORCE_COLOR:-${FORCE_COLOR:-}}" in
+    1|true|yes|on) return 0 ;;
+  esac
+
+  if [[ -n "${NO_COLOR:-}" ]]; then
+    return 1
+  fi
+
+  [[ -t 1 ]]
+}
+
+security_workflow_color() {
+  local color="$1"
+  local text="$2"
+
+  if ! security_workflow_color_enabled; then
+    printf '%s' "$text"
+    return
+  fi
+
+  case "$color" in
+    red) printf '\033[31m%s\033[0m' "$text" ;;
+    green) printf '\033[32m%s\033[0m' "$text" ;;
+    yellow) printf '\033[33m%s\033[0m' "$text" ;;
+    *) printf '%s' "$text" ;;
+  esac
+}
+
+security_workflow_pass_label() {
+  security_workflow_color green PASS
+}
+
+security_workflow_fail_label() {
+  security_workflow_color red FAIL
+}
+
+security_workflow_skip_label() {
+  security_workflow_color yellow SKIP
+}
+
 security_workflow_command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
@@ -94,10 +135,10 @@ security_workflow_run_step() {
 
   if [[ "$status" -eq 0 ]]; then
     security_workflow_set_outcome "$outcome_var" "success"
-    security_workflow_log "PASS: ${label}"
+    security_workflow_log "$(security_workflow_pass_label): ${label}"
   else
     security_workflow_set_outcome "$outcome_var" "failure"
-    security_workflow_log "FAIL: ${label} exited with status ${status}."
+    security_workflow_log "$(security_workflow_fail_label): ${label} exited with status ${status}."
   fi
 }
 

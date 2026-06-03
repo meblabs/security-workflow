@@ -8,25 +8,25 @@ security_workflow_check_required() {
   local applicable="$3"
 
   if [[ "$applicable" != "true" ]]; then
-    echo "SKIP: ${name} is not applicable."
+    echo "$(security_workflow_skip_label): ${name} is not applicable."
     return 0
   fi
 
   case "$outcome" in
     success)
-      echo "PASS: ${name}"
+      echo "$(security_workflow_pass_label): ${name}"
       return 0
       ;;
     failure|cancelled|timed_out|action_required)
-      echo "FAIL: ${name} ended with outcome '${outcome}'."
+      echo "$(security_workflow_fail_label): ${name} ended with outcome '${outcome}'."
       return 1
       ;;
     skipped)
-      echo "FAIL: ${name} was skipped but is applicable."
+      echo "$(security_workflow_fail_label): ${name} was skipped but is applicable."
       return 1
       ;;
     *)
-      echo "FAIL: ${name} has unknown outcome '${outcome:-empty}'."
+      echo "$(security_workflow_fail_label): ${name} has unknown outcome '${outcome:-empty}'."
       return 1
       ;;
   esac
@@ -46,11 +46,11 @@ security_workflow_gate() {
 
   if [[ "$failed" -ne 0 ]]; then
     SECURITY_GATE_OUTCOME="failure"
-    echo "Security gate failed."
+    echo "$(security_workflow_fail_label): Security gate failed."
     return 1
   fi
 
   SECURITY_GATE_OUTCOME="success"
-  echo "Security gate passed."
+  echo "$(security_workflow_pass_label): Security gate passed."
   return 0
 }
