@@ -10,6 +10,10 @@ security_workflow_require_docker() {
 security_workflow_semgrep() {
   security_workflow_require_docker || return $?
 
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  security_workflow_copy_tracked_files "$tmpdir"
+
   local config_args=()
   local config
   for config in $SECURITY_WORKFLOW_SECURITY_CONFIG; do
@@ -37,8 +41,9 @@ security_workflow_semgrep() {
       ;;
   esac
 
+  set +e
   docker run --rm \
-    -v "$SECURITY_WORKFLOW_REPO:/src:ro" \
+    -v "$tmpdir:/src:ro" \
     -v "$SECURITY_WORKFLOW_REPORTS_DIR:/reports" \
     -w /src \
     "semgrep/semgrep:${SECURITY_WORKFLOW_SEMGREP_VERSION}" \
@@ -53,6 +58,11 @@ security_workflow_semgrep() {
     --output /reports/semgrep.sarif \
     --error \
     .
+  local status="$?"
+  set -e
+
+  rm -rf "$tmpdir"
+  return "$status"
 }
 
 security_workflow_copy_tracked_files() {
@@ -105,6 +115,12 @@ security_workflow_trivy_docker_image() {
   printf 'aquasec/trivy:%s\n' "$tag"
 }
 
+security_workflow_zizmor_docker_image() {
+  local tag="$SECURITY_WORKFLOW_ZIZMOR_VERSION"
+  tag="${tag#v}"
+  printf 'ghcr.io/zizmorcore/zizmor:%s\n' "$tag"
+}
+
 security_workflow_trivy_fs() {
   security_workflow_require_docker || return $?
 
@@ -121,7 +137,7 @@ security_workflow_trivy_fs() {
     "$(security_workflow_trivy_docker_image)" \
     fs /repo \
     --scanners vuln \
-    --vuln-type os,library \
+    --pkg-types os,library \
     --severity "$SECURITY_WORKFLOW_SECURITY_VULNERABILITY_SEVERITIES" \
     --ignore-unfixed \
     --exit-code 1 \
@@ -204,7 +220,7 @@ security_workflow_zizmor() {
     -v "$SECURITY_WORKFLOW_REPO:/repo:ro" \
     -w /repo \
     "${docker_env[@]}" \
-    "ghcr.io/zizmorcore/zizmor:${SECURITY_WORKFLOW_ZIZMOR_VERSION}" \
+    "$(security_workflow_zizmor_docker_image)" \
     --persona=regular \
     --min-severity=high \
     --min-confidence=medium \
@@ -233,7 +249,7 @@ security_workflow_docker_build() {
   docker build \
     -f "$SECURITY_WORKFLOW_DOCKERFILE_PATH" \
     -t "$SECURITY_WORKFLOW_DOCKER_IMAGE_REF" \
-    "${build_args[@]}" \
+    ${build_args+"${build_args[@]}"} \
     "$SECURITY_WORKFLOW_DOCKER_BUILD_CONTEXT"
 
   echo "$SECURITY_WORKFLOW_DOCKER_IMAGE_REF" > "$SECURITY_WORKFLOW_REPORTS_DIR/docker-image-ref.txt"
@@ -249,7 +265,7 @@ security_workflow_trivy_image() {
     "$(security_workflow_trivy_docker_image)" \
     image "$SECURITY_WORKFLOW_DOCKER_IMAGE_REF" \
     --scanners vuln \
-    --vuln-type os,library \
+    --pkg-types os,library \
     --severity "$SECURITY_WORKFLOW_SECURITY_VULNERABILITY_SEVERITIES" \
     --ignore-unfixed \
     --exit-code 1 \
