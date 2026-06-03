@@ -156,7 +156,7 @@ Artifact upload and PR comments are non-blocking. They use `continue-on-error: t
 | `security-config` | no | `auto` | Semgrep config/rulesets. Use `auto` or a space-separated list such as `p/javascript p/typescript p/owasp-top-ten`. |
 | `security-severity-threshold` | no | `high` | Minimum Semgrep severity that fails the gate: `low`, `medium`, or `high` and aliases `info`, `warning`, `error`, `critical`. |
 | `security-vulnerability-severities` | no | `HIGH,CRITICAL` | Comma-separated Trivy severities that fail the gate. |
-| `security-skip-dirs` | no | `node_modules,.git,coverage,dist,build,.next,.nuxt` | Directories skipped by Trivy filesystem and config scans. |
+| `security-skip-dirs` | no | `node_modules,.git,.security-workflow,security-reports,coverage,dist,build,.next,.nuxt` | Directories skipped by Trivy filesystem and config scans. |
 | `semgrep-version` | no | `latest` | Semgrep Docker image tag. |
 | `trivy-version` | no | `v0.70.0` | Trivy CLI version used by `aquasecurity/trivy-action`. |
 | `gitleaks-version` | no | `v8.30.1` | Gitleaks Docker image tag. |
@@ -201,6 +201,91 @@ Minimum recommended fine-grained PAT repository permissions for `MEBBOT` in this
 | Issues | Read and write | Create or update the consolidated PR summary comment, because PR conversation comments use the Issues API. |
 
 This workflow does not need the `MEBBOT` PAT to have access to contents, actions, commit statuses, checks, discussions, merge queues, repository advisories, secrets, workflows, administration, or security events. `security-events: write` is only needed if a future version uploads SARIF into GitHub code scanning instead of only storing SARIF as artifacts and summarizing it in the PR comment.
+
+## Local Usage From An Application Repository
+
+The same scanner and gate logic can run locally before opening a pull request. The recommended setup for an application repository is to commit only a small bootstrap script and cache this repository under a gitignored internal directory.
+
+Add the local cache directory to the application repository `.gitignore`:
+
+```gitignore
+.security-workflow/
+```
+
+Add a bootstrap script, for example `security-workflow.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERSION="${SECURITY_WORKFLOW_VERSION:-v1.0}"
+CACHE_ROOT="${SECURITY_WORKFLOW_CACHE_DIR:-.security-workflow}"
+INSTALL_DIR="${CACHE_ROOT}"
+VERSION_FILE="${INSTALL_DIR}/VERSION"
+ARCHIVE_URL="https://github.com/meblabs/security-workflow/archive/refs/tags/${VERSION}.tar.gz"
+
+if [[ ! -x "${INSTALL_DIR}/bin/security-workflow" ]] || [[ ! -f "${VERSION_FILE}" ]] || [[ "$(cat "${VERSION_FILE}")" != "${VERSION}" ]]; then
+  rm -rf "${INSTALL_DIR}"
+  mkdir -p "${INSTALL_DIR}"
+
+  curl -fsSL "${ARCHIVE_URL}" \
+    | tar -xz -C "${INSTALL_DIR}" --strip-components=1
+
+  echo "${VERSION}" > "${VERSION_FILE}"
+fi
+
+exec "${INSTALL_DIR}/bin/security-workflow" \
+  --repo "$PWD" \
+  --ref "${SECURITY_WORKFLOW_REF:-HEAD}" \
+  --reports-dir "${CACHE_ROOT}/security-reports" \
+  "$@"
+```
+
+`--repo "$PWD"` can point either to a Git repository root or to a subdirectory inside a Git worktree. The scan scope remains the path passed with `--repo`.
+
+Add an npm script:
+
+```json
+{
+  "scripts": {
+    "security": "bash security-workflow.sh"
+  }
+}
+```
+
+Run the local security gate:
+
+```bash
+npm run security
+```
+
+Pass CLI options after `--`:
+
+```bash
+npm run security -- --security-severity-threshold medium
+```
+
+Use the same tag locally and in GitHub Actions. For example, if the pull request workflow uses:
+
+```yml
+uses: meblabs/security-workflow/.github/workflows/security.yml@v1.0
+```
+
+then local runs should use:
+
+```bash
+SECURITY_WORKFLOW_VERSION=v1.0 npm run security
+```
+
+The local CLI writes reports inside the gitignored cache directory:
+
+```text
+.security-workflow/security-reports/
+```
+
+This does not affect the GitHub Action. The reusable workflow does not pass `--reports-dir`, so it keeps using the default `security-reports/` path required by artifact upload and PR comments.
+
+Local requirements are `git`, `docker`, `curl`, and `tar`. `node` generates the SARIF findings overview, and `jq` normalizes SARIF metadata when available. `python3` is required only when `cfn-lint` applies because the repository contains SAM or CloudFormation templates.
 
 ## Usage Standalone
 

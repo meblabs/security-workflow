@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+# ShellCheck cannot resolve ROOT_DIR-based sources or cross-file globals in this entrypoint.
+# shellcheck disable=SC1091,SC2034
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+
+# shellcheck source=../lib/security-workflow/defaults.sh
+source "$ROOT_DIR/lib/security-workflow/defaults.sh"
+# shellcheck source=../lib/security-workflow/common.sh
+source "$ROOT_DIR/lib/security-workflow/common.sh"
+# shellcheck source=../lib/security-workflow/targets.sh
+source "$ROOT_DIR/lib/security-workflow/targets.sh"
+# shellcheck source=../lib/security-workflow/scanners.sh
+source "$ROOT_DIR/lib/security-workflow/scanners.sh"
+# shellcheck source=../lib/security-workflow/reports.sh
+source "$ROOT_DIR/lib/security-workflow/reports.sh"
+# shellcheck source=../lib/security-workflow/gate.sh
+source "$ROOT_DIR/lib/security-workflow/gate.sh"
+
+security_workflow_usage() {
+  cat <<'EOF'
+Usage: security-workflow [options]
+
+Run the MEBlabs security workflow locally against a git repository.
+
+Options:
+  --repo PATH                              Repository to scan. Default: .
+  --ref REF                                Ref label written to reports. Default: HEAD
+  --reports-dir PATH                       Reports directory. Default: security-reports
+  --security-config VALUE                  Semgrep config/rulesets. Default: auto
+  --security-severity-threshold VALUE      low|medium|high and aliases. Default: high
+  --security-vulnerability-severities CSV  Trivy severities. Default: HIGH,CRITICAL
+  --security-skip-dirs CSV                 Directories skipped by Trivy scans.
+  --semgrep-version VERSION                Semgrep Docker tag. Default: latest
+  --trivy-version VERSION                  Trivy Docker tag. Default: v0.70.0
+  --gitleaks-version VERSION               Gitleaks Docker tag. Default: v8.30.1
+  --zizmor-version VERSION                 zizmor Docker tag. Default: v1.25.2
+  --dockerfile-path PATH                   Dockerfile path. Default: Dockerfile
+  --docker-build-context PATH              Docker build context. Default: .
+  --docker-build-arg KEY=VALUE             Docker build arg. May be repeated.
+  --docker-build-args VALUE                Newline-separated Docker build args.
+  --docker-image-name NAME                 Local Docker image name.
+  --github-token TOKEN                     Token used by zizmor API-backed checks.
+  --no-docker-image                        Skip Docker build, image scan, image SBOM.
+  --no-license                             Skip Trivy license report.
+  --no-sbom                                Skip filesystem and image SBOM generation.
+  -h, --help                               Show this help.
+EOF
+}
+
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --repo)
+      SECURITY_WORKFLOW_REPO="$2"
+      shift 2
+      ;;
+    --ref)
+      SECURITY_WORKFLOW_REF="$2"
+      shift 2
+      ;;
+    --reports-dir)
+      SECURITY_WORKFLOW_REPORTS_DIR="$2"
+      shift 2
+      ;;
+    --security-config)
+      SECURITY_WORKFLOW_SECURITY_CONFIG="$2"
+      shift 2
+      ;;
+    --security-severity-threshold)
+      SECURITY_WORKFLOW_SECURITY_SEVERITY_THRESHOLD="$2"
+      shift 2
+      ;;
+    --security-vulnerability-severities)
+      SECURITY_WORKFLOW_SECURITY_VULNERABILITY_SEVERITIES="$2"
+      shift 2
+      ;;
+    --security-skip-dirs)
+      SECURITY_WORKFLOW_SECURITY_SKIP_DIRS="$2"
+      shift 2
+      ;;
+    --semgrep-version)
+      SECURITY_WORKFLOW_SEMGREP_VERSION="$2"
+      shift 2
+      ;;
+    --trivy-version)
+      SECURITY_WORKFLOW_TRIVY_VERSION="$2"
+      shift 2
+      ;;
+    --gitleaks-version)
+      SECURITY_WORKFLOW_GITLEAKS_VERSION="$2"
+      shift 2
+      ;;
+    --zizmor-version)
+      SECURITY_WORKFLOW_ZIZMOR_VERSION="$2"
+      shift 2
+      ;;
+    --dockerfile-path)
+      SECURITY_WORKFLOW_DOCKERFILE_PATH="$2"
+      shift 2
+      ;;
+    --docker-build-context)
+      SECURITY_WORKFLOW_DOCKER_BUILD_CONTEXT="$2"
+      shift 2
+      ;;
+    --docker-build-arg)
+      if [[ -n "$SECURITY_WORKFLOW_DOCKER_BUILD_ARGS" ]]; then
+        SECURITY_WORKFLOW_DOCKER_BUILD_ARGS="${SECURITY_WORKFLOW_DOCKER_BUILD_ARGS}"$'\n'"$2"
+      else
+        SECURITY_WORKFLOW_DOCKER_BUILD_ARGS="$2"
+      fi
+      shift 2
+      ;;
+    --docker-build-args)
+      SECURITY_WORKFLOW_DOCKER_BUILD_ARGS="$2"
+      shift 2
+      ;;
+    --docker-image-name)
+      SECURITY_WORKFLOW_DOCKER_IMAGE_NAME="$2"
+      shift 2
+      ;;
+    --github-token)
+      SECURITY_WORKFLOW_GITHUB_TOKEN="$2"
+      shift 2
+      ;;
+    --no-docker-image)
+      SECURITY_WORKFLOW_DOCKER_IMAGE_ENABLED=false
+      shift
+      ;;
+    --no-license)
+      SECURITY_WORKFLOW_LICENSE_ENABLED=false
+      shift
+      ;;
+    --no-sbom)
+      SECURITY_WORKFLOW_SBOM_ENABLED=false
+      shift
+      ;;
+    -h|--help)
+      security_workflow_usage
+      exit 0
+      ;;
+    *)
+      security_workflow_error "Unknown option: $1"
+      security_workflow_usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+SECURITY_WORKFLOW_REPO="$(security_workflow_abs_path "$SECURITY_WORKFLOW_REPO")"
+
+if ! git -C "$SECURITY_WORKFLOW_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  security_workflow_error "Repository path is not inside a git worktree: $SECURITY_WORKFLOW_REPO"
+  exit 2
+fi
+
+cd "$SECURITY_WORKFLOW_REPO"
+
+security_workflow_prepare_reports
+security_workflow_detect_targets
+
+if [[ "$SECURITY_WORKFLOW_DOCKER_IMAGE_ENABLED" != "true" ]]; then
+  ROOT_DOCKERFILE=false
+fi
+
+SECURITY_WORKFLOW_DOCKER_IMAGE_REF="${SECURITY_WORKFLOW_DOCKER_IMAGE_NAME}:${GITHUB_SHA:-$SECURITY_WORKFLOW_COMMIT}"
+
+SEMGREP_OUTCOME=skipped
+GITLEAKS_OUTCOME=skipped
+TRIVY_FS_OUTCOME=skipped
+TRIVY_CONFIG_OUTCOME=skipped
+CFN_LINT_OUTCOME=skipped
+ZIZMOR_OUTCOME=skipped
+DOCKER_BUILD_OUTCOME=skipped
+TRIVY_IMAGE_OUTCOME=skipped
+TRIVY_LICENSE_OUTCOME=skipped
+TRIVY_SBOM_OUTCOME=skipped
+TRIVY_IMAGE_SBOM_OUTCOME=skipped
+SECURITY_GATE_OUTCOME=failure
+
+security_workflow_run_step SEMGREP_OUTCOME "Semgrep SAST" security_workflow_semgrep
+security_workflow_run_step GITLEAKS_OUTCOME "Gitleaks secrets" security_workflow_gitleaks
+security_workflow_run_step TRIVY_FS_OUTCOME "Trivy filesystem SCA" security_workflow_trivy_fs
+security_workflow_run_step TRIVY_CONFIG_OUTCOME "Trivy IaC/config misconfiguration" security_workflow_trivy_config
+
+if [[ "$SAM_TEMPLATES" == "true" ]]; then
+  security_workflow_run_step CFN_LINT_OUTCOME "cfn-lint SAM/CloudFormation validation" security_workflow_cfn_lint
+else
+  CFN_LINT_OUTCOME=na
+fi
+
+if [[ "$GITHUB_ACTIONS_FILES" == "true" ]]; then
+  security_workflow_run_step ZIZMOR_OUTCOME "zizmor GitHub Actions security" security_workflow_zizmor
+else
+  ZIZMOR_OUTCOME=na
+fi
+
+if [[ "$ROOT_DOCKERFILE" == "true" ]]; then
+  security_workflow_run_step DOCKER_BUILD_OUTCOME "Docker image build" security_workflow_docker_build
+  if [[ "$DOCKER_BUILD_OUTCOME" == "success" ]]; then
+    security_workflow_run_step TRIVY_IMAGE_OUTCOME "Trivy Docker image scan" security_workflow_trivy_image
+  else
+    TRIVY_IMAGE_OUTCOME=skipped
+  fi
+else
+  DOCKER_BUILD_OUTCOME=na
+  TRIVY_IMAGE_OUTCOME=na
+fi
+
+if [[ "$SECURITY_WORKFLOW_LICENSE_ENABLED" == "true" ]]; then
+  security_workflow_run_step TRIVY_LICENSE_OUTCOME "Trivy license report" security_workflow_trivy_license
+else
+  TRIVY_LICENSE_OUTCOME=na
+fi
+
+if [[ "$SECURITY_WORKFLOW_SBOM_ENABLED" == "true" ]]; then
+  security_workflow_run_step TRIVY_SBOM_OUTCOME "Trivy filesystem SBOM" security_workflow_trivy_sbom
+else
+  TRIVY_SBOM_OUTCOME=na
+fi
+
+if [[ "$SECURITY_WORKFLOW_SBOM_ENABLED" == "true" && "$ROOT_DOCKERFILE" == "true" && "$DOCKER_BUILD_OUTCOME" == "success" ]]; then
+  security_workflow_run_step TRIVY_IMAGE_SBOM_OUTCOME "Trivy Docker image SBOM" security_workflow_trivy_image_sbom
+elif [[ "$ROOT_DOCKERFILE" == "true" ]]; then
+  TRIVY_IMAGE_SBOM_OUTCOME=skipped
+else
+  TRIVY_IMAGE_SBOM_OUTCOME=na
+fi
+
+security_workflow_normalize_all_sarif
+
+if security_workflow_command_exists node; then
+  set +e
+  node "$ROOT_DIR/scripts/sarif-findings-summary.js" \
+    --reports-dir "$SECURITY_WORKFLOW_REPORTS_DIR" \
+    --repository "${GITHUB_REPOSITORY:-}" \
+    --source-ref "${HEAD_REF:-$SECURITY_WORKFLOW_REF}" \
+    --server-url "${GITHUB_SERVER_URL:-https://github.com}"
+  set -e
+else
+  security_workflow_warn "node is not available; skipping SARIF findings overview."
+fi
+
+security_workflow_write_summary
+
+set +e
+security_workflow_gate
+gate_status="$?"
+set -e
+
+security_workflow_write_status_files
+security_workflow_write_github_outputs
+
+security_workflow_log ""
+security_workflow_log "Reports written to: ${SECURITY_WORKFLOW_REPORTS_DIR}"
+
+exit "$gate_status"
