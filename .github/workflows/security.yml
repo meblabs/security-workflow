@@ -80,6 +80,12 @@ on:
         type: string
         default: "v1.25.2"
 
+      zizmor-config:
+        description: "Optional repository-relative zizmor config file. Defaults to the built-in MEBlabs policy."
+        required: false
+        type: string
+        default: ""
+
       dockerfile-path:
         description: "Dockerfile path used for optional Docker image build and scan"
         required: false
@@ -207,6 +213,7 @@ jobs:
           INPUT_TRIVY_VERSION: ${{ inputs.trivy-version }}
           INPUT_GITLEAKS_VERSION: ${{ inputs.gitleaks-version }}
           INPUT_ZIZMOR_VERSION: ${{ inputs.zizmor-version }}
+          INPUT_ZIZMOR_CONFIG: ${{ inputs.zizmor-config }}
           INPUT_DOCKERFILE_PATH: ${{ inputs.dockerfile-path }}
           INPUT_DOCKER_BUILD_CONTEXT: ${{ inputs.docker-build-context }}
           INPUT_DOCKER_BUILD_ARGS: ${{ inputs.docker-build-args }}
@@ -226,6 +233,7 @@ jobs:
             --trivy-version "$INPUT_TRIVY_VERSION" \
             --gitleaks-version "$INPUT_GITLEAKS_VERSION" \
             --zizmor-version "$INPUT_ZIZMOR_VERSION" \
+            --zizmor-config "$INPUT_ZIZMOR_CONFIG" \
             --dockerfile-path "$INPUT_DOCKERFILE_PATH" \
             --docker-build-context "$INPUT_DOCKER_BUILD_CONTEXT" \
             --docker-build-args "$INPUT_DOCKER_BUILD_ARGS" \

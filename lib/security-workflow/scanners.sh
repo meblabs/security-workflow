@@ -121,6 +121,20 @@ security_workflow_zizmor_docker_image() {
   printf 'ghcr.io/zizmorcore/zizmor:%s\n' "$tag"
 }
 
+security_workflow_write_default_zizmor_config() {
+  local config_path="$1"
+
+  cat > "$config_path" <<'EOF'
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        meblabs/*: ref-pin
+        actions/*: ref-pin
+        aws-actions/*: ref-pin
+EOF
+}
+
 security_workflow_trivy_fs() {
   security_workflow_require_docker || return $?
 
@@ -217,12 +231,26 @@ security_workflow_zizmor() {
     docker_env=(-e "ZIZMOR_OFFLINE=true")
   fi
 
+  local config_path
+  if [[ -n "$SECURITY_WORKFLOW_ZIZMOR_CONFIG" ]]; then
+    config_path="$(security_workflow_abs_path "$SECURITY_WORKFLOW_ZIZMOR_CONFIG")"
+    if [[ ! -f "$config_path" ]]; then
+      security_workflow_error "zizmor config file not found: $SECURITY_WORKFLOW_ZIZMOR_CONFIG"
+      return 2
+    fi
+  else
+    config_path="$SECURITY_WORKFLOW_REPORTS_DIR/zizmor.yml"
+    security_workflow_write_default_zizmor_config "$config_path"
+  fi
+
   set +e
   docker run --rm \
     -v "$SECURITY_WORKFLOW_REPO:/repo:ro" \
+    -v "$config_path:/zizmor.yml:ro" \
     -w /repo \
     "${docker_env[@]}" \
     "$(security_workflow_zizmor_docker_image)" \
+    --config /zizmor.yml \
     --persona=regular \
     --min-severity=high \
     --min-confidence=medium \

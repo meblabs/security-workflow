@@ -37,6 +37,7 @@ Options:
   --trivy-version VERSION                  Trivy Docker tag. Default: v0.71.0
   --gitleaks-version VERSION               Gitleaks Docker tag. Default: v8.30.1
   --zizmor-version VERSION                 zizmor Docker tag. Default: v1.25.2
+  --zizmor-config PATH                     zizmor config file. Default: built-in MEBlabs policy
   --dockerfile-path PATH                   Dockerfile path. Default: Dockerfile
   --docker-build-context PATH              Docker build context. Default: .
   --docker-build-arg KEY=VALUE             Docker build arg. May be repeated.
@@ -96,6 +97,10 @@ while [[ "$#" -gt 0 ]]; do
       ;;
     --zizmor-version)
       SECURITY_WORKFLOW_ZIZMOR_VERSION="$2"
+      shift 2
+      ;;
+    --zizmor-config)
+      SECURITY_WORKFLOW_ZIZMOR_CONFIG="$2"
       shift 2
       ;;
     --dockerfile-path)

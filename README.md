@@ -90,6 +90,20 @@ It scans workflow and action definitions for security issues such as unsafe perm
 
 When `github-token` is available, the workflow passes it as `GH_TOKEN` so `zizmor` can perform API-backed checks. Otherwise it can run in offline mode, but in this workflow `github-token` is required by the reusable workflow contract.
 
+By default, the workflow runs `zizmor` with a generated config that relaxes `unpinned-uses` for common trusted action namespaces:
+
+```yml
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        meblabs/*: ref-pin
+        actions/*: ref-pin
+        aws-actions/*: ref-pin
+```
+
+Set `zizmor-config` in the reusable workflow, or pass `--zizmor-config PATH` locally, to replace this built-in config with a repository-specific `zizmor.yml`.
+
 The workflow writes `security-reports/zizmor.txt` and includes the first 200 lines in the GitHub Step Summary. Exit code `3` is treated as reportable findings rather than a blocking failure according to the current operational policy. `zizmor` is a blocking check only when workflow/action files are detected; otherwise it is reported as `NA`.
 
 ### Docker Image Build
@@ -161,6 +175,7 @@ Artifact upload and PR comments are non-blocking. They use `continue-on-error: t
 | `trivy-version` | no | `v0.71.0` | Trivy CLI version used by the local Trivy Docker image. |
 | `gitleaks-version` | no | `v8.30.1` | Gitleaks Docker image tag. |
 | `zizmor-version` | no | `v1.25.2` | zizmor Docker image tag. |
+| `zizmor-config` | no | built-in MEBlabs policy | Optional repository-relative zizmor config file replacing the built-in policy. |
 | `dockerfile-path` | no | `Dockerfile` | Dockerfile path used for optional Docker image build and scan. |
 | `docker-build-context` | no | `.` | Docker build context used for optional Docker image build and scan. |
 | `docker-build-args` | no | empty | Optional newline-separated Docker build args in `KEY=VALUE` format. |
@@ -265,6 +280,7 @@ Pass CLI options after `--`:
 
 ```bash
 npm run security -- --security-severity-threshold medium
+npm run security -- --zizmor-config zizmor.yml
 ```
 
 Run only selected local checks while iterating on a specific class of findings:
@@ -420,6 +436,7 @@ Typical files include:
 - `sbom-image.cdx.json`
 - `cfn-lint.txt`
 - `zizmor.txt`
+- `zizmor.yml`
 - `docker-image-ref.txt`
 
 The GitHub Step Summary receives the same security table as the artifact summary. On pull requests, the workflow updates a single consolidated PR comment marked with:
