@@ -169,13 +169,20 @@ jobs:
       - name: Resolve security workflow source
         id: workflow_source
         shell: bash
+        env:
+          JOB_WORKFLOW_REF: ${{ job.workflow_ref }}
         run: |
           set -euo pipefail
 
-          workflow_source="${GITHUB_WORKFLOW_REF%@*}"
-          workflow_ref="${GITHUB_WORKFLOW_REF##*@}"
+          workflow_source="${JOB_WORKFLOW_REF%@*}"
+          workflow_ref="${JOB_WORKFLOW_REF##*@}"
           workflow_repo="${workflow_source%%/.github/workflows/*}"
           source_path=".security-workflow/source"
+
+          if [[ -z "$workflow_repo" || "$workflow_repo" == "$workflow_source" || -z "$workflow_ref" || "$workflow_ref" == "$JOB_WORKFLOW_REF" ]]; then
+            echo "Unable to resolve reusable workflow source from job.workflow_ref='${JOB_WORKFLOW_REF}'." >&2
+            exit 2
+          fi
 
           {
             echo "repository=${workflow_repo}"

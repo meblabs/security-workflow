@@ -334,6 +334,8 @@ This does not affect the GitHub Action. The reusable workflow does not pass `--r
 
 Local requirements are `git`, `docker`, `curl`, and `tar`. `node` generates the SARIF findings overview, and `jq` normalizes SARIF metadata when available. `python3` is required only when `cfn-lint` applies because the repository contains SAM or CloudFormation templates.
 
+In GitHub Actions, the reusable workflow checks out its own CLI scripts from the same repository and ref used by the caller's `uses: meblabs/security-workflow/.github/workflows/security.yml@...` line. No extra input is needed to keep the workflow YAML and local CLI scripts aligned.
+
 ## Usage Standalone
 
 ```yml
