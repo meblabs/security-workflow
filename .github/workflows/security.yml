@@ -143,7 +143,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           repository: ${{ inputs.repository != '' && inputs.repository || github.repository }}
           fetch-depth: 0
@@ -169,7 +169,7 @@ jobs:
           workflow_source="${GITHUB_WORKFLOW_REF%@*}"
           workflow_ref="${GITHUB_WORKFLOW_REF##*@}"
           workflow_repo="${workflow_source%%/.github/workflows/*}"
-          source_path="${RUNNER_TEMP}/security-workflow-source"
+          source_path=".security-workflow/source"
 
           {
             echo "repository=${workflow_repo}"
@@ -177,20 +177,19 @@ jobs:
             echo "source_path=${source_path}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Fetch security workflow scripts
-        shell: bash
-        env:
-          SECURITY_WORKFLOW_REPOSITORY: ${{ steps.workflow_source.outputs.repository }}
-          SECURITY_WORKFLOW_REF: ${{ steps.workflow_source.outputs.ref }}
-          SECURITY_WORKFLOW_SOURCE: ${{ steps.workflow_source.outputs.source_path }}
-        run: |
-          set -euo pipefail
+          echo "Security workflow source repository: ${workflow_repo}"
+          echo "Security workflow source ref: ${workflow_ref}"
 
-          rm -rf "$SECURITY_WORKFLOW_SOURCE"
-          git init "$SECURITY_WORKFLOW_SOURCE"
-          git -C "$SECURITY_WORKFLOW_SOURCE" remote add origin "https://github.com/${SECURITY_WORKFLOW_REPOSITORY}.git"
-          git -C "$SECURITY_WORKFLOW_SOURCE" fetch --depth 1 origin "$SECURITY_WORKFLOW_REF"
-          git -C "$SECURITY_WORKFLOW_SOURCE" checkout --detach FETCH_HEAD
+      - name: Fetch security workflow scripts
+        id: fetch_security_workflow
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ steps.workflow_source.outputs.repository }}
+          ref: ${{ steps.workflow_source.outputs.ref }}
+          path: ${{ steps.workflow_source.outputs.source_path }}
+          fetch-depth: 1
+          token: ${{ secrets['github-token'] }}
+          persist-credentials: false
 
       - name: Run security workflow
         id: security_run
@@ -234,7 +233,7 @@ jobs:
 
       - name: Upload security reports
         id: upload_security_reports
-        if: ${{ always() && inputs.upload-artifact }}
+        if: ${{ always() && inputs.upload-artifact && hashFiles('security-reports/**') != '' }}
         uses: actions/upload-artifact@v7
         continue-on-error: true
         with:
@@ -244,7 +243,7 @@ jobs:
           retention-days: ${{ inputs.artifact-retention-days }}
 
       - name: Post security summary in the pull request
-        if: ${{ always() && inputs.post-pr-comment && inputs.pr-number != '' }}
+        if: ${{ always() && inputs.post-pr-comment && inputs.pr-number != '' && steps.fetch_security_workflow.outcome == 'success' && hashFiles('security-reports/security-status.json') != '' }}
         uses: actions/github-script@v9
         continue-on-error: true
         env:
