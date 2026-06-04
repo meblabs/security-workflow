@@ -1,0 +1,10 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      # fix: so security bumps land as a fix and the latest major tag can be moved.
+      prefix: "fix"
+      prefix-development: "fix"

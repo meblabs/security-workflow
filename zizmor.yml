@@ -1,0 +1,7 @@
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        meblabs/*: ref-pin
+        actions/*: ref-pin
+        aws-actions/*: ref-pin

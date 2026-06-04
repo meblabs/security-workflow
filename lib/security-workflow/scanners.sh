@@ -121,20 +121,6 @@ security_workflow_zizmor_docker_image() {
   printf 'ghcr.io/zizmorcore/zizmor:%s\n' "$tag"
 }
 
-security_workflow_write_default_zizmor_config() {
-  local config_path="$1"
-
-  cat > "$config_path" <<'EOF'
-rules:
-  unpinned-uses:
-    config:
-      policies:
-        meblabs/*: ref-pin
-        actions/*: ref-pin
-        aws-actions/*: ref-pin
-EOF
-}
-
 security_workflow_trivy_fs() {
   security_workflow_require_docker || return $?
 
@@ -239,8 +225,11 @@ security_workflow_zizmor() {
       return 2
     fi
   else
-    config_path="$SECURITY_WORKFLOW_REPORTS_DIR/zizmor.yml"
-    security_workflow_write_default_zizmor_config "$config_path"
+    config_path="$SECURITY_WORKFLOW_ROOT_DIR/zizmor.yml"
+    if [[ ! -f "$config_path" ]]; then
+      security_workflow_error "Bundled zizmor config not found: $config_path"
+      return 2
+    fi
   fi
 
   set +e

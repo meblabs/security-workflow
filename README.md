@@ -1,5 +1,9 @@
 # MEBlabs Security Workflow
 
+[![zizmor](https://github.com/meblabs/security-workflow/actions/workflows/zizmor.yml/badge.svg)](https://github.com/meblabs/security-workflow/actions/workflows/zizmor.yml)
+![type](https://img.shields.io/badge/type-Reusable%20Workflow-2ea44f)
+[![](https://img.shields.io/static/v1?label=MEBlabs&message=%E2%9D%A4&logo=GitHub&color=%23fe8e86)](https://github.com/sponsors/meblabs)
+
 Reusable GitHub Actions workflow for the MEBlabs open-source security gate.
 
 This repository is designed to be used after [meblabs/npm-pull-request-action](https://github.com/meblabs/npm-pull-request-action), but it is independent from that composite action. The npm quality action remains responsible for checkout, Node setup, `npm ci`, Prettier, lockfile audit remediation, ESLint, Jest, and downstream coordination outputs. This workflow only runs security checks against the exact ref passed by the caller.
@@ -315,7 +319,7 @@ When a check is excluded by `--only` or `--skip`, it is reported as `NA` and doe
 Use the same tag locally and in GitHub Actions. For example, if the pull request workflow uses:
 
 ```yml
-uses: meblabs/security-workflow/.github/workflows/security.yml@v1.0
+uses: meblabs/security-workflow/.github/workflows/security.yml@v1
 ```
 
 then local runs should use:
@@ -348,7 +352,7 @@ on:
 jobs:
   security:
     name: Security Gate
-    uses: meblabs/security-workflow/.github/workflows/security.yml@v1.0
+    uses: meblabs/security-workflow/.github/workflows/security.yml@v1
     permissions:
       contents: read
       actions: read
@@ -407,7 +411,7 @@ jobs:
     if: |
       needs.quality.outputs.prettier-changed != 'true' &&
       needs.quality.outputs.audit-changed != 'true'
-    uses: meblabs/security-workflow/.github/workflows/security.yml@v1.0
+    uses: meblabs/security-workflow/.github/workflows/security.yml@v1
     permissions:
       contents: read
       actions: read
