@@ -3,34 +3,40 @@ name: Move major tag
 on:
   push:
     branches: ["main"]
+  workflow_dispatch:   
 
 permissions:
   contents: write
 
 jobs:
   retag:
-    # Only react to Dependabot commits, not manual feature pushes.
+    # Manual dispatch: always move the major tag to current HEAD.
+    # Push: only react to Dependabot commits, not manual feature pushes.
     if: >
+      github.event_name == 'workflow_dispatch' ||
       github.event.head_commit.author.username == 'dependabot[bot]' ||
       (startsWith(github.event.head_commit.message, 'fix') &&
        contains(github.event.head_commit.message, 'bump'))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.0.2
         with:
           fetch-depth: 0
           fetch-tags: true
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Move latest major tag to HEAD
         shell: bash
         env:
-          GITHUB_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           # Highest existing major tag of the form vN (a vN tag is assumed to exist).
           latest_major=$(git tag -l 'v[0-9]*' | grep -E '^v[0-9]+$' | sort -V | tail -1)
           echo "Moving ${latest_major} -> $(git rev-parse --short "${GITHUB_SHA}")"
           git tag -f "${latest_major}" "${GITHUB_SHA}"
-          git push origin "refs/tags/${latest_major}" --force
+          # Token passed via env (masked in logs); not stored in the checkout config.
+          git push --force \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "refs/tags/${latest_major}"

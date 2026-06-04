@@ -1,7 +1,7 @@
 # MEBlabs Security Workflow
 
-[![zizmor](https://github.com/meblabs/security-workflow/actions/workflows/zizmor.yml/badge.svg)](https://github.com/meblabs/security-workflow/actions/workflows/zizmor.yml)
-![type](https://img.shields.io/badge/type-Reusable%20Workflow-2ea44f)
+[![quality](https://github.com/meblabs/security-workflow/actions/workflows/quality.yml/badge.svg)](https://github.com/meblabs/security-workflow/actions/workflows/quality.yml)
+![type](https://img.shields.io/badge/github-Reusable%20Workflow-purple?logo=github)
 [![](https://img.shields.io/static/v1?label=MEBlabs&message=%E2%9D%A4&logo=GitHub&color=%23fe8e86)](https://github.com/sponsors/meblabs)
 
 Reusable GitHub Actions workflow for the MEBlabs open-source security gate.

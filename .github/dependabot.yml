@@ -4,7 +4,10 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Wait before adopting freshly-published versions (supply-chain safety).
+    # Security updates are NOT subject to cooldown, so security PRs stay immediate.
+    cooldown:
+      default-days: 7
     commit-message:
-      # fix: so security bumps land as a fix and the latest major tag can be moved.
       prefix: "fix"
       prefix-development: "fix"
