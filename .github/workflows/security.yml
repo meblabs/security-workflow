@@ -149,7 +149,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.0.2
         with:
           repository: ${{ inputs.repository != '' && inputs.repository || github.repository }}
           fetch-depth: 0
@@ -196,7 +196,7 @@ jobs:
 
       - name: Fetch security workflow scripts
         id: fetch_security_workflow
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.0.2
         with:
           repository: ${{ steps.workflow_source.outputs.repository }}
           ref: ${{ steps.workflow_source.outputs.ref }}
