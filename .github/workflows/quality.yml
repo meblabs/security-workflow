@@ -47,6 +47,38 @@ jobs:
           set -euo pipefail
           shellcheck -x bin/security-workflow lib/security-workflow/*.sh
 
+  semgrep:
+    name: semgrep
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # Pinned for reproducibility; bump manually (no Dependabot for `docker run` images).
+      SEMGREP_VERSION: "1.165.0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      # Same SAST engine this workflow ships to consumers (see lib/security-workflow/scanners.sh).
+      # config=auto + severity=ERROR mirrors the product's default "high" gate.
+      - name: Run Semgrep SAST
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD:/src:ro" \
+            -w /src \
+            "semgrep/semgrep:${SEMGREP_VERSION}" \
+            semgrep scan \
+            --config auto \
+            --severity ERROR \
+            --exclude node_modules \
+            --exclude .git \
+            --error \
+            .
+
   gitleaks:
     name: gitleaks
     runs-on: ubuntu-latest
