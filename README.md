@@ -237,7 +237,7 @@ Add a bootstrap script, for example `security-workflow.sh`:
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${SECURITY_WORKFLOW_VERSION:-v1.0}"
+VERSION="${SECURITY_WORKFLOW_VERSION:-v1}"
 CACHE_ROOT="${SECURITY_WORKFLOW_CACHE_DIR:-.security-workflow}"
 INSTALL_DIR="${CACHE_ROOT}"
 VERSION_FILE="${INSTALL_DIR}/VERSION"
@@ -325,7 +325,7 @@ uses: meblabs/security-workflow/.github/workflows/security.yml@v1
 then local runs should use:
 
 ```bash
-SECURITY_WORKFLOW_VERSION=v1.0 npm run security
+SECURITY_WORKFLOW_VERSION=v1 npm run security
 ```
 
 The local CLI writes reports inside the gitignored cache directory:
@@ -394,7 +394,7 @@ jobs:
     steps:
       - id: quality
         name: NPM pull request quality gate
-        uses: meblabs/npm-pull-request-action@v4.0
+        uses: meblabs/npm-pull-request-action@v4
         with:
           token: ${{ secrets.MEBBOT }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
