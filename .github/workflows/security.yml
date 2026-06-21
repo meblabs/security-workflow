@@ -110,6 +110,12 @@ on:
         type: string
         default: "meblabs-security-scan"
 
+      docker-image-scan:
+        description: "Build and vulnerability-scan the Docker image when a Dockerfile exists. Set to false for dev-only Dockerfiles not shipped to production (build, image scan, and image SBOM are reported as NA). The Dockerfile misconfiguration lint via Trivy config still runs."
+        required: false
+        type: boolean
+        default: true
+
       post-pr-comment:
         description: "Post or update a consolidated security summary comment on pull requests"
         required: false
@@ -226,9 +232,15 @@ jobs:
           INPUT_DOCKER_BUILD_CONTEXT: ${{ inputs.docker-build-context }}
           INPUT_DOCKER_BUILD_ARGS: ${{ inputs.docker-build-args }}
           INPUT_DOCKER_IMAGE_NAME: ${{ inputs.docker-image-name }}
+          INPUT_DOCKER_IMAGE_SCAN: ${{ inputs.docker-image-scan }}
           HEAD_REF: ${{ inputs.head-ref }}
         run: |
           set -euo pipefail
+
+          docker_args=()
+          if [[ "$INPUT_DOCKER_IMAGE_SCAN" != "true" ]]; then
+            docker_args+=(--no-docker-image)
+          fi
 
           "$SECURITY_WORKFLOW_SOURCE/bin/security-workflow" \
             --repo "$PWD" \
@@ -245,7 +257,8 @@ jobs:
             --dockerfile-path "$INPUT_DOCKERFILE_PATH" \
             --docker-build-context "$INPUT_DOCKER_BUILD_CONTEXT" \
             --docker-build-args "$INPUT_DOCKER_BUILD_ARGS" \
-            --docker-image-name "$INPUT_DOCKER_IMAGE_NAME"
+            --docker-image-name "$INPUT_DOCKER_IMAGE_NAME" \
+            ${docker_args[@]+"${docker_args[@]}"}
 
       - name: Upload security reports
         id: upload_security_reports

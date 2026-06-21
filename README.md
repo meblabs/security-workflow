@@ -123,6 +123,8 @@ The workflow builds a local image using:
 
 The resulting image reference is written to `security-reports/docker-image-ref.txt`. The build is a blocking check when the configured Dockerfile exists. If no configured Dockerfile exists, Docker image build and image scanning are reported as `NA`.
 
+Set `docker-image-scan: false` to opt out even when a Dockerfile is present — useful for dev-only Dockerfiles that are never shipped to production. Image build, image scan, and image SBOM are then reported as `NA` and do not fail the gate; the Dockerfile is still covered by the Trivy config misconfiguration lint. Locally the equivalent is `--no-docker-image` (or `--skip docker`).
+
 ### Trivy Docker Image Vulnerability Scan
 
 Trivy image scan runs only when the configured Dockerfile exists and the Docker image build succeeds.
@@ -184,6 +186,7 @@ Artifact upload and PR comments are non-blocking. They use `continue-on-error: t
 | `docker-build-context` | no | `.` | Docker build context used for optional Docker image build and scan. |
 | `docker-build-args` | no | empty | Optional newline-separated Docker build args in `KEY=VALUE` format. |
 | `docker-image-name` | no | `meblabs-security-scan` | Local Docker image name used for security scanning. |
+| `docker-image-scan` | no | `true` | Build and vulnerability-scan the Docker image when a Dockerfile exists. Set to `false` for dev-only Dockerfiles not shipped to production: image build, image scan, and image SBOM are reported as `NA`. The Dockerfile misconfiguration lint via Trivy config still runs. |
 | `post-pr-comment` | no | `true` | Post or update a consolidated security summary comment on pull requests. |
 | `upload-artifact` | no | `true` | Upload security reports as a workflow artifact. |
 | `artifact-retention-days` | no | `14` | Retention days for the `security-reports` artifact. |
