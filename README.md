@@ -49,6 +49,8 @@ Gitleaks runs on every invocation and scans for committed secrets such as API ke
 
 The workflow intentionally scans only files tracked by git. It creates a temporary archive from `git ls-files` and scans that isolated directory. This avoids false positives from generated files, local caches, scanner output, dependency folders, and other untracked working-directory content.
 
+If a `.gitleaks.toml` file is present at the repository root, it is honored as the Gitleaks configuration (custom rules and allowlists), whether or not it is tracked by git. It is passed explicitly via `--config`; otherwise Gitleaks uses its default ruleset.
+
 The workflow writes `security-reports/gitleaks.sarif` with redacted findings. If Gitleaks fails on a pull request, the workflow posts SARIF findings using the bot `token`. Gitleaks is a blocking check.
 
 ### Trivy Filesystem SCA

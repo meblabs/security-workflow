@@ -85,12 +85,26 @@ security_workflow_gitleaks() {
 
   security_workflow_copy_tracked_files "$tmpdir"
 
+  # Honor a repository-level .gitleaks.toml when present on disk (tracked or not).
+  # The scan target is a copy of tracked files only, so the config is mounted
+  # separately and passed explicitly instead of relying on gitleaks auto-discovery.
+  local config_mount=()
+  local config_arg=()
+  local repo_config="$SECURITY_WORKFLOW_REPO/.gitleaks.toml"
+  if [[ -f "$repo_config" ]]; then
+    config_mount=(-v "$repo_config:/gitleaks.toml:ro")
+    config_arg=(--config /gitleaks.toml)
+    security_workflow_log "Gitleaks: using repository .gitleaks.toml config."
+  fi
+
   set +e
   docker run --rm \
     -v "$tmpdir:/scan:ro" \
     -v "$SECURITY_WORKFLOW_REPORTS_DIR:/reports" \
+    ${config_mount[@]+"${config_mount[@]}"} \
     "ghcr.io/gitleaks/gitleaks:${SECURITY_WORKFLOW_GITLEAKS_VERSION}" \
     dir /scan \
+    ${config_arg[@]+"${config_arg[@]}"} \
     --redact \
     --no-banner \
     --report-format sarif \
