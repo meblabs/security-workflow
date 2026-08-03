@@ -30,7 +30,7 @@ on:
         description: "Node.js version used when npm metadata is needed"
         required: false
         type: string
-        default: "22.x"
+        default: "24.x"
 
       security-config:
         description: "Semgrep config/rulesets. Use 'auto' or a space-separated list such as 'p/javascript p/typescript p/owasp-top-ten'"

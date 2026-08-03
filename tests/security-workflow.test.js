@@ -6,24 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-
-const repositoryRoot = path.resolve(__dirname, '..');
-
-const shellQuote = (value) => `'${String(value).replace(/'/g, `'"'"'`)}'`;
-
-const runBash = (script, { cwd = repositoryRoot, env = {} } = {}) => {
-  const result = spawnSync('/bin/bash', ['-c', script], {
-    cwd,
-    encoding: 'utf8',
-    env: { ...process.env, ...env },
-  });
-
-  if (result.status !== 0) {
-    assert.fail(`bash exited ${result.status}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
-  }
-
-  return result.stdout;
-};
+const { repositoryRoot, runBash, shellQuote } = require('./test-helpers');
 
 test('SARIF summary separates accepted suppressions from active findings', (t) => {
   const reportsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'security-workflow-sarif-'));

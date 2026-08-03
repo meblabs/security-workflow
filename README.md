@@ -215,7 +215,7 @@ Artifact upload and PR comments are non-blocking. They use `continue-on-error: t
 | Input | Required | Default | Description |
 |---|---:|---|---|
 | `ref` | yes | n/a | Git ref, branch, tag, or SHA to scan. The workflow checks out this ref explicitly. |
-| `node-version` | no | `22.x` | Node.js version used when npm metadata is needed. |
+| `node-version` | no | `24.x` | Node.js version used when npm metadata is needed. |
 | `security-config` | no | `auto` | Semgrep config/rulesets. Use `auto` or a space-separated list such as `p/javascript p/typescript p/owasp-top-ten`. |
 | `security-severity-threshold` | no | `high` | Minimum Semgrep severity that fails the gate: `low`, `medium`, or `high` and aliases `info`, `warning`, `error`, `critical`. |
 | `security-vulnerability-severities` | no | `HIGH,CRITICAL` | Comma-separated Trivy severities that fail the gate. |
@@ -385,7 +385,7 @@ Treat `.security-workflow/` as disposable implementation cache. Do not edit its 
 
 This does not affect the GitHub Action. The reusable workflow does not pass `--reports-dir`, so it keeps using the default `security-reports/` path required by artifact upload and PR comments.
 
-Local requirements are `git`, `docker`, `curl`, and `tar`. `node` generates the SARIF findings overview, and `jq` normalizes SARIF metadata when available. `python3` is required only when `cfn-lint` applies because the repository contains SAM or CloudFormation templates.
+Local requirements are `git`, `docker`, `curl`, and `tar`. Node.js 24 generates the SARIF findings overview, and `jq` normalizes SARIF metadata when available. `python3` is required only when `cfn-lint` applies because the repository contains SAM or CloudFormation templates.
 
 In GitHub Actions, the reusable workflow checks out its own CLI scripts from the same repository and ref used by the caller's `uses: meblabs/security-workflow/.github/workflows/security.yml@...` line. No extra input is needed to keep the workflow YAML and local CLI scripts aligned.
 
@@ -447,7 +447,7 @@ jobs:
         with:
           token: ${{ secrets.MEBBOT }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          node-version: 22.x
+          node-version: 24.x
           prettier: true
           eslint: true
           audit: true
