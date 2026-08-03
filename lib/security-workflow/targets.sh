@@ -24,6 +24,7 @@ security_workflow_detect_targets() {
     -not -path './.git/*' \
     -not -path './.security-workflow/*' \
     -not -path './security-reports/*' \
+    -not -path '*/.aws-sam/*' \
     -print | wc -l | tr -d ' ')"
 
   local github_actions_files_count

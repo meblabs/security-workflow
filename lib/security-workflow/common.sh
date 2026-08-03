@@ -79,16 +79,15 @@ security_workflow_abs_path() {
 security_workflow_csv_to_flags() {
   local flag="$1"
   local csv="$2"
+  local items=()
   local item
-  local old_ifs="$IFS"
 
-  IFS=','
-  for item in $csv; do
+  IFS=',' read -r -a items <<< "$csv"
+  for item in "${items[@]}"; do
     item="$(printf '%s' "$item" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     [[ -z "$item" ]] && continue
     printf '%s\0%s\0' "$flag" "$item"
   done
-  IFS="$old_ifs"
 }
 
 security_workflow_check_in_list() {

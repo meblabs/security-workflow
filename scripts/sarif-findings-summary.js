@@ -31,6 +31,8 @@ const getRule = (run, ruleId) => run?.tool?.driver?.rules?.find((rule) => rule.i
 const oneLine = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
 const tableCell = (value) => oneLine(value).replace(/\|/g, '\\|');
 const encodePath = (artifact) => artifact.split('/').map(encodeURIComponent).join('/');
+const acceptedSuppressions = (result) => (result.suppressions ?? [])
+  .filter((suppression) => !suppression.status || suppression.status === 'accepted');
 
 const sourceBase = options.repository
   ? `${options.serverUrl}/${options.repository}/blob/${options.sourceRef}`
@@ -54,7 +56,7 @@ const sections = [];
 for (const [label, relativeFile] of reports) {
   const file = path.join(options.reportsDir, relativeFile);
   if (!fs.existsSync(file)) {
-    rows.push(`| ${label} | no SARIF file | 0 |`);
+    rows.push(`| ${label} | no SARIF file | 0 | 0 |`);
     continue;
   }
 
@@ -62,11 +64,12 @@ for (const [label, relativeFile] of reports) {
   try {
     sarif = JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch (error) {
-    rows.push(`| ${label} | invalid SARIF | 0 |`);
+    rows.push(`| ${label} | invalid SARIF | 0 | 0 |`);
     continue;
   }
 
-  const findings = [];
+  const activeFindings = [];
+  const suppressedFindings = [];
   for (const run of sarif.runs ?? []) {
     for (const result of run.results ?? []) {
       const rule = getRule(run, result.ruleId);
@@ -75,38 +78,63 @@ for (const [label, relativeFile] of reports) {
       const region = location?.region ?? {};
       const message = oneLine(result.message?.text || rule.shortDescription?.text || result.ruleId || 'Finding');
       const help = result.helpUri || rule.helpUri || rule.help?.markdown || rule.fullDescription?.text || '';
-      findings.push({
+      const suppressions = acceptedSuppressions(result);
+      const finding = {
         ruleId: result.ruleId ?? rule.id ?? '',
         level: result.level ?? '',
         location: sourceLink(artifact, region),
         message,
         help,
-      });
+        suppression: suppressions
+          .map((suppression) => [suppression.kind, suppression.status, suppression.justification]
+            .filter(Boolean)
+            .join(': '))
+          .join('; '),
+      };
+
+      if (suppressions.length > 0) suppressedFindings.push(finding);
+      else activeFindings.push(finding);
     }
   }
 
-  rows.push(`| ${label} | ${findings.length > 0 ? 'findings' : 'clean'} | ${findings.length} |`);
+  rows.push(`| ${label} | ${activeFindings.length > 0 ? 'findings' : 'clean'} | ${activeFindings.length} | ${suppressedFindings.length} |`);
 
-  if (findings.length > 0) {
+  if (activeFindings.length > 0 || suppressedFindings.length > 0) {
     sections.push(`### ${label}`);
     sections.push('');
-    sections.push(`Total findings: ${findings.length}`);
+    sections.push(`Active findings: ${activeFindings.length}`);
     sections.push('');
-    sections.push('| Rule | Level | Location | Message | Help |');
-    sections.push('|---|---|---|---|---|');
-    for (const finding of findings) {
-      const help = /^https?:\/\//i.test(finding.help) ? `[link](${finding.help})` : tableCell(finding.help);
-      sections.push(`| ${tableCell(finding.ruleId)} | ${tableCell(finding.level)} | ${finding.location} | ${tableCell(finding.message)} | ${help} |`);
+
+    if (activeFindings.length > 0) {
+      sections.push('| Rule | Level | Location | Message | Help |');
+      sections.push('|---|---|---|---|---|');
+      for (const finding of activeFindings) {
+        const help = /^https?:\/\//i.test(finding.help) ? `[link](${finding.help})` : tableCell(finding.help);
+        sections.push(`| ${tableCell(finding.ruleId)} | ${tableCell(finding.level)} | ${finding.location} | ${tableCell(finding.message)} | ${help} |`);
+      }
+      sections.push('');
     }
+
+    sections.push(`Suppressed findings: ${suppressedFindings.length}`);
     sections.push('');
+
+    if (suppressedFindings.length > 0) {
+      sections.push('| Rule | Level | Location | Message | Suppression | Help |');
+      sections.push('|---|---|---|---|---|---|');
+      for (const finding of suppressedFindings) {
+        const help = /^https?:\/\//i.test(finding.help) ? `[link](${finding.help})` : tableCell(finding.help);
+        sections.push(`| ${tableCell(finding.ruleId)} | ${tableCell(finding.level)} | ${finding.location} | ${tableCell(finding.message)} | ${tableCell(finding.suppression)} | ${help} |`);
+      }
+      sections.push('');
+    }
   }
 }
 
 const content = [
   '## SARIF findings overview',
   '',
-  '| Scanner | Status | Findings |',
-  '|---|---:|---:|',
+  '| Scanner | Status | Active | Suppressed |',
+  '|---|---:|---:|---:|',
   ...rows,
   '',
   ...sections,

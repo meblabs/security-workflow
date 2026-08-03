@@ -36,6 +36,7 @@ Options:
   --semgrep-version VERSION                Semgrep Docker tag. Default: latest
   --trivy-version VERSION                  Trivy Docker tag. Default: v0.71.0
   --gitleaks-version VERSION               Gitleaks Docker tag. Default: v8.30.1
+  --cfn-lint-version VERSION               cfn-lint package version. Default: 1.53.3
   --zizmor-version VERSION                 zizmor Docker tag. Default: v1.25.2
   --zizmor-config PATH                     zizmor config file. Default: built-in MEBlabs policy
   --dockerfile-path PATH                   Dockerfile path. Default: Dockerfile
@@ -93,6 +94,10 @@ while [[ "$#" -gt 0 ]]; do
       ;;
     --gitleaks-version)
       SECURITY_WORKFLOW_GITLEAKS_VERSION="$2"
+      shift 2
+      ;;
+    --cfn-lint-version)
+      SECURITY_WORKFLOW_CFN_LINT_VERSION="$2"
       shift 2
       ;;
     --zizmor-version)

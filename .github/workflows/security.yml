@@ -54,7 +54,7 @@ on:
         description: "Comma-separated directories skipped by Trivy filesystem/config scans"
         required: false
         type: string
-        default: "node_modules,.git,.security-workflow,security-reports,coverage,dist,build,.next,.nuxt"
+        default: "node_modules,.git,.security-workflow,security-reports,coverage,dist,**/dist,build,**/build,.next,.nuxt,.aws-sam,**/.aws-sam"
 
       semgrep-version:
         description: "Semgrep Docker image tag"
@@ -73,6 +73,12 @@ on:
         required: false
         type: string
         default: "v8.30.1"
+
+      cfn-lint-version:
+        description: "cfn-lint package version"
+        required: false
+        type: string
+        default: "1.53.3"
 
       zizmor-version:
         description: "zizmor Docker image tag"
@@ -226,6 +232,7 @@ jobs:
           INPUT_SEMGREP_VERSION: ${{ inputs.semgrep-version }}
           INPUT_TRIVY_VERSION: ${{ inputs.trivy-version }}
           INPUT_GITLEAKS_VERSION: ${{ inputs.gitleaks-version }}
+          INPUT_CFN_LINT_VERSION: ${{ inputs.cfn-lint-version }}
           INPUT_ZIZMOR_VERSION: ${{ inputs.zizmor-version }}
           INPUT_ZIZMOR_CONFIG: ${{ inputs.zizmor-config }}
           INPUT_DOCKERFILE_PATH: ${{ inputs.dockerfile-path }}
@@ -252,6 +259,7 @@ jobs:
             --semgrep-version "$INPUT_SEMGREP_VERSION" \
             --trivy-version "$INPUT_TRIVY_VERSION" \
             --gitleaks-version "$INPUT_GITLEAKS_VERSION" \
+            --cfn-lint-version "$INPUT_CFN_LINT_VERSION" \
             --zizmor-version "$INPUT_ZIZMOR_VERSION" \
             --zizmor-config "$INPUT_ZIZMOR_CONFIG" \
             --dockerfile-path "$INPUT_DOCKERFILE_PATH" \

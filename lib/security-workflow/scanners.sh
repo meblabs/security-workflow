@@ -123,6 +123,34 @@ security_workflow_trivy_skip_args() {
   security_workflow_csv_to_flags "--skip-dirs" "$SECURITY_WORKFLOW_SECURITY_SKIP_DIRS"
 }
 
+security_workflow_trivy_ignore_file() {
+  local yaml_file="$SECURITY_WORKFLOW_REPO/.trivyignore.yaml"
+  local yml_file="$SECURITY_WORKFLOW_REPO/.trivyignore.yml"
+  local legacy_file="$SECURITY_WORKFLOW_REPO/.trivyignore"
+
+  if [[ -f "$yaml_file" ]]; then
+    if [[ -f "$yml_file" || -f "$legacy_file" ]]; then
+      security_workflow_warn "Multiple Trivy ignore files found; using .trivyignore.yaml."
+    fi
+    printf '%s\n' "$yaml_file"
+  elif [[ -f "$yml_file" ]]; then
+    if [[ -f "$legacy_file" ]]; then
+      security_workflow_warn "Multiple Trivy ignore files found; using .trivyignore.yml."
+    fi
+    printf '%s\n' "$yml_file"
+  elif [[ -f "$legacy_file" ]]; then
+    printf '%s\n' "$legacy_file"
+  fi
+}
+
+security_workflow_trivy_ignore_container_path() {
+  case "$1" in
+    *.yaml) printf '/.trivyignore.yaml\n' ;;
+    *.yml) printf '/.trivyignore.yml\n' ;;
+    *) printf '/.trivyignore\n' ;;
+  esac
+}
+
 security_workflow_trivy_docker_image() {
   local tag="$SECURITY_WORKFLOW_TRIVY_VERSION"
   tag="${tag#v}"
@@ -144,10 +172,23 @@ security_workflow_trivy_fs() {
     skip_args+=("$skip_arg")
   done < <(security_workflow_trivy_skip_args)
 
+  local ignore_file=""
+  local ignore_container_path=""
+  local ignore_mount=()
+  local ignore_args=()
+  ignore_file="$(security_workflow_trivy_ignore_file)"
+  if [[ -n "$ignore_file" ]]; then
+    ignore_container_path="$(security_workflow_trivy_ignore_container_path "$ignore_file")"
+    ignore_mount=(-v "$ignore_file:$ignore_container_path:ro")
+    ignore_args=(--ignorefile "$ignore_container_path")
+    security_workflow_log "Trivy filesystem SCA: using repository $(basename "$ignore_file")."
+  fi
+
   docker run --rm \
     -e TRIVY_LIMIT_SEVERITIES_FOR_SARIF=true \
     -v "$SECURITY_WORKFLOW_REPO:/repo:ro" \
     -v "$SECURITY_WORKFLOW_REPORTS_DIR:/reports" \
+    ${ignore_mount[@]+"${ignore_mount[@]}"} \
     "$(security_workflow_trivy_docker_image)" \
     fs /repo \
     --skip-version-check \
@@ -158,6 +199,7 @@ security_workflow_trivy_fs() {
     --exit-code 1 \
     --format sarif \
     --output /reports/trivy-fs.sarif \
+    ${ignore_args[@]+"${ignore_args[@]}"} \
     "${skip_args[@]}"
 }
 
@@ -170,10 +212,23 @@ security_workflow_trivy_config() {
     skip_args+=("$skip_arg")
   done < <(security_workflow_trivy_skip_args)
 
+  local ignore_file=""
+  local ignore_container_path=""
+  local ignore_mount=()
+  local ignore_args=()
+  ignore_file="$(security_workflow_trivy_ignore_file)"
+  if [[ -n "$ignore_file" ]]; then
+    ignore_container_path="$(security_workflow_trivy_ignore_container_path "$ignore_file")"
+    ignore_mount=(-v "$ignore_file:$ignore_container_path:ro")
+    ignore_args=(--ignorefile "$ignore_container_path")
+    security_workflow_log "Trivy config: using repository $(basename "$ignore_file")."
+  fi
+
   docker run --rm \
     -e TRIVY_LIMIT_SEVERITIES_FOR_SARIF=true \
     -v "$SECURITY_WORKFLOW_REPO:/repo:ro" \
     -v "$SECURITY_WORKFLOW_REPORTS_DIR:/reports" \
+    ${ignore_mount[@]+"${ignore_mount[@]}"} \
     "$(security_workflow_trivy_docker_image)" \
     config /repo \
     --skip-version-check \
@@ -181,22 +236,82 @@ security_workflow_trivy_config() {
     --exit-code 1 \
     --format sarif \
     --output /reports/trivy-config.sarif \
+    ${ignore_args[@]+"${ignore_args[@]}"} \
     "${skip_args[@]}"
 }
 
-security_workflow_cfn_lint() {
-  local venv_dir
-  venv_dir="${RUNNER_TEMP:-/tmp}/cfn-lint-venv"
+security_workflow_cfn_lint_cache_base() {
+  if [[ -n "${RUNNER_TEMP:-}" ]]; then
+    printf '%s/security-workflow\n' "${RUNNER_TEMP%/}"
+  elif [[ -n "${XDG_CACHE_HOME:-}" && "$XDG_CACHE_HOME" == /* ]]; then
+    printf '%s/security-workflow\n' "${XDG_CACHE_HOME%/}"
+  elif [[ -n "${HOME:-}" ]]; then
+    printf '%s/.cache/security-workflow\n' "${HOME%/}"
+  elif [[ -n "${TMPDIR:-}" ]]; then
+    printf '%s/security-workflow\n' "${TMPDIR%/}"
+  else
+    printf '/tmp/security-workflow\n'
+  fi
+}
 
-  if ! security_workflow_command_exists python3; then
-    security_workflow_error "python3 is required to install and run cfn-lint."
-    return 127
+security_workflow_cfn_lint_venv_dir() {
+  local python_version
+  local cache_version
+  python_version="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" || return 1
+  cache_version="$(printf '%s' "$SECURITY_WORKFLOW_CFN_LINT_VERSION" | tr -c '[:alnum:]._+-' '_')"
+  printf '%s/cfn-lint/%s/python-%s\n' \
+    "$(security_workflow_cfn_lint_cache_base)" \
+    "$cache_version" \
+    "$python_version"
+}
+
+security_workflow_cfn_lint_venv_healthy() {
+  local venv_dir="$1"
+  local installed_version
+
+  [[ -x "$venv_dir/bin/python" && -x "$venv_dir/bin/cfn-lint" ]] || return 1
+
+  installed_version="$(
+    "$venv_dir/bin/python" -c \
+      'import cfnlint; from importlib.metadata import version; print(version("cfn-lint"))' \
+      2>/dev/null
+  )" || return 1
+
+  [[ "$installed_version" == "$SECURITY_WORKFLOW_CFN_LINT_VERSION" ]] || return 1
+  "$venv_dir/bin/cfn-lint" --version >/dev/null 2>&1
+}
+
+security_workflow_prepare_cfn_lint_venv() {
+  local venv_dir="$1"
+
+  if security_workflow_cfn_lint_venv_healthy "$venv_dir"; then
+    return 0
   fi
 
-  python3 -m venv "$venv_dir"
-  "$venv_dir/bin/python" -m pip install --quiet --upgrade pip
-  "$venv_dir/bin/python" -m pip install --quiet 'cfn-lint[sarif]'
+  security_workflow_log "cfn-lint: rebuilding virtualenv at $venv_dir."
 
+  if ! python3 -m venv --clear "$venv_dir"; then
+    security_workflow_error "Unable to create the cfn-lint virtualenv at $venv_dir."
+    return 1
+  fi
+
+  if ! "$venv_dir/bin/python" -m pip install --quiet --upgrade pip; then
+    security_workflow_error "Unable to upgrade pip in the cfn-lint virtualenv at $venv_dir."
+    return 1
+  fi
+
+  if ! "$venv_dir/bin/python" -m pip install --quiet "cfn-lint==$SECURITY_WORKFLOW_CFN_LINT_VERSION"; then
+    security_workflow_error "Unable to install cfn-lint $SECURITY_WORKFLOW_CFN_LINT_VERSION in $venv_dir."
+    return 1
+  fi
+
+  if ! security_workflow_cfn_lint_venv_healthy "$venv_dir"; then
+    security_workflow_error "The cfn-lint virtualenv at $venv_dir failed its health check after installation."
+    return 1
+  fi
+}
+
+security_workflow_cfn_lint() {
   local templates=()
   local template
   while IFS= read -r -d '' template; do
@@ -207,12 +322,26 @@ security_workflow_cfn_lint() {
     -not -path './.git/*' \
     -not -path './.security-workflow/*' \
     -not -path './security-reports/*' \
+    -not -path '*/.aws-sam/*' \
     -print0)
 
   if [[ "${#templates[@]}" -eq 0 ]]; then
     echo "No AWS SAM/CloudFormation templates found."
     return 0
   fi
+
+  if ! security_workflow_command_exists python3; then
+    security_workflow_error "python3 is required to install and run cfn-lint."
+    return 127
+  fi
+
+  local venv_dir
+  if ! venv_dir="$(security_workflow_cfn_lint_venv_dir)"; then
+    security_workflow_error "Unable to determine the cfn-lint virtualenv path."
+    return 1
+  fi
+
+  security_workflow_prepare_cfn_lint_venv "$venv_dir" || return $?
 
   set +e
   "$venv_dir/bin/cfn-lint" --non-zero-exit-code error "${templates[@]}" 2>&1 | tee "$SECURITY_WORKFLOW_REPORTS_DIR/cfn-lint.txt"
@@ -291,10 +420,23 @@ security_workflow_docker_build() {
 security_workflow_trivy_image() {
   security_workflow_require_docker || return $?
 
+  local ignore_file=""
+  local ignore_container_path=""
+  local ignore_mount=()
+  local ignore_args=()
+  ignore_file="$(security_workflow_trivy_ignore_file)"
+  if [[ -n "$ignore_file" ]]; then
+    ignore_container_path="$(security_workflow_trivy_ignore_container_path "$ignore_file")"
+    ignore_mount=(-v "$ignore_file:$ignore_container_path:ro")
+    ignore_args=(--ignorefile "$ignore_container_path")
+    security_workflow_log "Trivy image: using repository $(basename "$ignore_file")."
+  fi
+
   docker run --rm \
     -e TRIVY_LIMIT_SEVERITIES_FOR_SARIF=true \
     -v "$SECURITY_WORKFLOW_REPORTS_DIR:/reports" \
     -v /var/run/docker.sock:/var/run/docker.sock \
+    ${ignore_mount[@]+"${ignore_mount[@]}"} \
     "$(security_workflow_trivy_docker_image)" \
     image "$SECURITY_WORKFLOW_DOCKER_IMAGE_REF" \
     --skip-version-check \
@@ -304,7 +446,8 @@ security_workflow_trivy_image() {
     --ignore-unfixed \
     --exit-code 1 \
     --format sarif \
-    --output /reports/trivy-image.sarif
+    --output /reports/trivy-image.sarif \
+    ${ignore_args[@]+"${ignore_args[@]}"}
 }
 
 security_workflow_trivy_license() {

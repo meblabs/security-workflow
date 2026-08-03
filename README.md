@@ -75,13 +75,54 @@ The scan uses severities from `security-vulnerability-severities`, skips directo
 
 This check is broad and always runs. Dedicated `cfn-lint` and `zizmor` checks still run separately when their specific target files exist. Trivy config scan is a blocking check.
 
+### Trivy Finding Suppression
+
+The blocking Trivy filesystem, config, and image scans honor a repository-root ignore file. The workflow passes the file explicitly to every Trivy container, so local and CI behavior does not depend on the container working directory.
+
+Supported files, in precedence order, are:
+
+1. `.trivyignore.yaml`
+2. `.trivyignore.yml`
+3. `.trivyignore`
+
+The YAML format is recommended because it can scope accepted findings by scanner, path or package URL, record a statement, and set an expiration date. For example:
+
+```yml
+vulnerabilities:
+  - id: CVE-2026-12345
+    purls:
+      - pkg:npm/example@1.0.0
+    statement: Waiting for the upstream base image update
+    expired_at: 2026-09-01
+
+misconfigurations:
+  - id: AVD-DS-0002
+    paths:
+      - Dockerfile
+    statement: This development image intentionally runs as root
+```
+
+Commit the selected ignore file to the repository. An untracked local policy is available to local scans but not to a clean CI checkout and will therefore produce different results. If multiple supported files exist, the workflow logs a warning and uses the first one in the precedence list.
+
 ### cfn-lint SAM And CloudFormation Validation
 
-`cfn-lint` runs only when the repository contains `template.yaml` or `template.yml` outside skipped dependency and git directories.
+`cfn-lint` runs only when the repository contains `template.yaml` or `template.yml` outside skipped dependency, git, and `.aws-sam` build directories.
 
-It validates AWS SAM and CloudFormation templates for structural errors, invalid resource properties, unsupported values, and template issues that CloudFormation would reject or warn about. The workflow installs `cfn-lint[sarif]` in a temporary Python virtual environment and runs it with `--non-zero-exit-code error`.
+It validates AWS SAM and CloudFormation templates for structural errors, invalid resource properties, unsupported values, and template issues that CloudFormation would reject or warn about. The workflow installs the exact `cfn-lint-version` in a persistent, versioned Python virtual environment and runs it with `--non-zero-exit-code error`. The environment is health-checked before use and rebuilt automatically if the executable, package import, or installed version is inconsistent.
 
 The workflow writes textual output to `security-reports/cfn-lint.txt` and includes the first 200 lines in the GitHub Step Summary. `cfn-lint` is a blocking check only when templates are detected; otherwise it is reported as `NA`.
+
+### Suppression And Policy Matrix
+
+| Scanner | Repository policy or suppression mechanism |
+|---|---|
+| Semgrep | Inline `nosemgrep` comments and the selected Semgrep rulesets |
+| Gitleaks | Repository-root `.gitleaks.toml` rules and allowlists |
+| Trivy filesystem/config/image | `.trivyignore.yaml`, `.trivyignore.yml`, or `.trivyignore` |
+| cfn-lint | Repository `.cfnlintrc` and cfn-lint template metadata |
+| zizmor | Repository config passed through `zizmor-config` or `--zizmor-config` |
+
+Suppress the narrowest finding possible and record why the risk is accepted. Prefer expiring, path- or package-scoped Trivy YAML entries over repository-wide vulnerability IDs.
 
 ### zizmor GitHub Actions Security
 
@@ -157,7 +198,7 @@ It generates a CycloneDX SBOM for the locally built image and writes `security-r
 
 When the workflow runs on a pull request, it publishes one consolidated summary comment using the bot `token`. The comment is marked with `<!-- meblabs-security-workflow:summary -->`.
 
-The consolidated comment includes the check table and expandable details for scanner failures. SARIF-producing scanners are summarized from their SARIF files, including rule, level, source location, message, and help link where available. `cfn-lint` and `zizmor` text output is also included in expandable sections.
+The consolidated comment includes the check table and expandable details for scanner failures. SARIF-producing scanners are summarized from their SARIF files, including separate active and suppressed counts plus rule, level, source location, message, and help link where available. Suppressed findings remain visible for audit but do not make a scanner summary appear dirty. `cfn-lint` and `zizmor` text output is also included in expandable sections.
 
 The consolidated comment is idempotent: the workflow updates the previous marked comment instead of creating a new one on every run. Its table has only `Check` and `Outcome` columns. Outcomes are rendered as green `PASS`, red `FAIL`, or grey `NA` badges. `NA` means that the check was not applicable to the scanned repository, for example Docker image scanning when the configured Dockerfile does not exist.
 
@@ -178,10 +219,11 @@ Artifact upload and PR comments are non-blocking. They use `continue-on-error: t
 | `security-config` | no | `auto` | Semgrep config/rulesets. Use `auto` or a space-separated list such as `p/javascript p/typescript p/owasp-top-ten`. |
 | `security-severity-threshold` | no | `high` | Minimum Semgrep severity that fails the gate: `low`, `medium`, or `high` and aliases `info`, `warning`, `error`, `critical`. |
 | `security-vulnerability-severities` | no | `HIGH,CRITICAL` | Comma-separated Trivy severities that fail the gate. |
-| `security-skip-dirs` | no | `node_modules,.git,.security-workflow,security-reports,coverage,dist,build,.next,.nuxt` | Directories skipped by Trivy filesystem and config scans. |
+| `security-skip-dirs` | no | `node_modules,.git,.security-workflow,security-reports,coverage,dist,**/dist,build,**/build,.next,.nuxt,.aws-sam,**/.aws-sam` | Root and nested directories skipped by Trivy filesystem and config scans. |
 | `semgrep-version` | no | `latest` | Semgrep Docker image tag. |
 | `trivy-version` | no | `v0.71.0` | Trivy CLI version used by the local Trivy Docker image. |
 | `gitleaks-version` | no | `v8.30.1` | Gitleaks Docker image tag. |
+| `cfn-lint-version` | no | `1.53.3` | Exact cfn-lint Python package version. |
 | `zizmor-version` | no | `v1.25.2` | zizmor Docker image tag. |
 | `zizmor-config` | no | built-in MEBlabs policy | Optional repository-relative zizmor config file replacing the built-in policy. |
 | `dockerfile-path` | no | `Dockerfile` | Dockerfile path used for optional Docker image build and scan. |
@@ -339,6 +381,8 @@ The local CLI writes reports inside the gitignored cache directory:
 .security-workflow/security-reports/
 ```
 
+Treat `.security-workflow/` as disposable implementation cache. Do not edit its bundled `zizmor.yml` or store repository policy there: a workflow version change recreates the directory. Keep repository-specific policy in a tracked file outside the cache and pass it with `--zizmor-config`.
+
 This does not affect the GitHub Action. The reusable workflow does not pass `--reports-dir`, so it keeps using the default `security-reports/` path required by artifact upload and PR comments.
 
 Local requirements are `git`, `docker`, `curl`, and `tar`. `node` generates the SARIF findings overview, and `jq` normalizes SARIF metadata when available. `python3` is required only when `cfn-lint` applies because the repository contains SAM or CloudFormation templates.
@@ -456,7 +500,7 @@ The GitHub Step Summary receives the same security table as the artifact summary
 <!-- meblabs-security-workflow:summary -->
 ```
 
-Scanner details are included in that single consolidated comment. SARIF files are parsed into `security-reports/sarif-findings-summary.md`, and text reports such as `cfn-lint.txt` and `zizmor.txt` are attached as expandable sections.
+Scanner details are included in that single consolidated comment. SARIF files are parsed into `security-reports/sarif-findings-summary.md`, which reports active and suppressed findings separately. Text reports such as `cfn-lint.txt` and `zizmor.txt` are attached as expandable sections.
 
 ## Failure Policy
 
