@@ -500,7 +500,7 @@ The GitHub Step Summary receives the same security table as the artifact summary
 <!-- meblabs-security-workflow:summary -->
 ```
 
-Scanner details are included in that single consolidated comment. SARIF files are parsed into `security-reports/sarif-findings-summary.md`, which reports active and suppressed findings separately. Text reports such as `cfn-lint.txt` and `zizmor.txt` are attached as expandable sections.
+Scanner details are included in that single consolidated comment. SARIF files are parsed into `security-reports/sarif-findings-summary.md`, which reports active and suppressed findings separately. Text reports such as `cfn-lint.txt` and `zizmor.txt` are attached as expandable sections. If the SARIF overview cannot be generated, the run gets a `SARIF findings overview` warning annotation and the comment is posted without that section; the gate result is unchanged.
 
 ## Failure Policy
 
@@ -530,7 +530,9 @@ Missing optional targets are reported as `NA`, not as failures.
 
 If the workflow scans the wrong commit, check the caller's `ref` input. With `meblabs/npm-pull-request-action`, pass `needs.quality.outputs.current-head-sha` and run this workflow only when `prettier-changed` and `audit-changed` are not `true`.
 
-If PR comments are missing, verify that `token` is passed from `${{ secrets.MEBBOT }}` and that the bot PAT has Pull requests read/write and Issues read/write. Reusable workflows called from non-PR events do not post PR comments.
+If PR comments are missing, verify that `token` is passed from `${{ secrets.MEBBOT }}` and that the bot PAT has Pull requests read/write and Issues read/write. Reusable workflows called from non-PR events do not post PR comments. The comment step is non-blocking, so its error shows up only as an annotation on the `Security` check run, not as a failed check.
+
+The workflow unpacks its own source inside the caller checkout (`.security-workflow/source` in Actions, `.security-workflow/` locally). Its root `package.json` pins `"type": "commonjs"`, so the bundled Node scripts keep working when the caller's `package.json` declares `"type": "module"`. Do not remove it.
 
 If using a fine-grained PAT, the current broad permission set with read access to metadata and secrets plus read/write access to actions, code, commit statuses, discussions, issues, merge queues, pull requests, repository advisories, security events, and workflows is sufficient for this workflow. It is broader than needed. For this workflow alone, reduce `MEBBOT` to Metadata read, Pull requests read/write, and Issues read/write.
 

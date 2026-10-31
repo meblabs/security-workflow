@@ -93,6 +93,45 @@ test('SARIF summary reports clean when every finding is suppressed', (t) => {
   assert.match(summary, /\| Gitleaks secrets \| clean \| 0 \| 1 \|/);
 });
 
+test('Node scripts stay CommonJS when unpacked inside an ESM caller repository', (t) => {
+  const callerRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'security-workflow-esm-caller-'));
+  t.after(() => fs.rmSync(callerRoot, { recursive: true, force: true }));
+
+  // Same layout as the reusable workflow: the source sits inside the caller checkout,
+  // so without its own package.json Node would apply the caller's "type": "module".
+  fs.writeFileSync(path.join(callerRoot, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
+  const sourceRoot = path.join(callerRoot, '.security-workflow', 'source');
+  fs.mkdirSync(sourceRoot, { recursive: true });
+  fs.copyFileSync(path.join(repositoryRoot, 'package.json'), path.join(sourceRoot, 'package.json'));
+  fs.cpSync(path.join(repositoryRoot, 'scripts'), path.join(sourceRoot, 'scripts'), { recursive: true });
+  const reportsDir = path.join(callerRoot, 'security-reports');
+  fs.mkdirSync(reportsDir);
+
+  const result = spawnSync(process.execPath, [
+    path.join(sourceRoot, 'scripts/sarif-findings-summary.js'),
+    '--reports-dir',
+    reportsDir,
+  ], { cwd: callerRoot, encoding: 'utf8' });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(fs.existsSync(path.join(reportsDir, 'sarif-findings-summary.md')));
+
+  // actions/github-script loads the comment script with require().
+  const postSecurityComment = require(path.join(sourceRoot, 'scripts/post-pr-comment.js'));
+  assert.equal(typeof postSecurityComment, 'function');
+});
+
+test('non-blocking warnings become check annotations only on GitHub Actions', () => {
+  const script = [
+    'set -euo pipefail',
+    `source ${shellQuote(path.join(repositoryRoot, 'lib/security-workflow/common.sh'))}`,
+    'security_workflow_warn_annotation "SARIF findings overview" "summary failed" 2>&1',
+  ].join('\n');
+
+  assert.equal(runBash(script, { env: { GITHUB_ACTIONS: 'true' } }), '::warning title=SARIF findings overview::summary failed\n');
+  assert.equal(runBash(script, { env: { GITHUB_ACTIONS: '' } }), 'WARN: SARIF findings overview: summary failed\n');
+});
+
 test('Trivy blocking scans pass the repository YAML ignore file explicitly', (t) => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'security-workflow-trivy-'));
   t.after(() => fs.rmSync(fixtureRoot, { recursive: true, force: true }));
