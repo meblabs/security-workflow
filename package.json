@@ -1,0 +1,7 @@
+{
+  "name": "security-workflow",
+  "description": "Pins scripts/*.js to CommonJS: the workflow unpacks this repository inside the caller checkout, where Node would otherwise inherit the caller's package.json \"type\".",
+  "private": true,
+  "license": "MIT",
+  "type": "commonjs"
+}

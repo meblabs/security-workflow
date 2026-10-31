@@ -8,6 +8,20 @@ security_workflow_warn() {
   printf 'WARN: %s\n' "$*" >&2
 }
 
+# Non-blocking problem that must not go unnoticed: a check run annotation on
+# GitHub Actions, a plain warning elsewhere. Callers pass a fixed title and a
+# single-line message.
+security_workflow_warn_annotation() {
+  local title="$1"
+  shift
+
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    printf '::warning title=%s::%s\n' "$title" "$*"
+  else
+    security_workflow_warn "${title}: $*"
+  fi
+}
+
 security_workflow_error() {
   printf 'ERROR: %s\n' "$*" >&2
 }

@@ -286,7 +286,13 @@ if security_workflow_command_exists node; then
     --repository "${GITHUB_REPOSITORY:-}" \
     --source-ref "${HEAD_REF:-$SECURITY_WORKFLOW_REF}" \
     --server-url "${GITHUB_SERVER_URL:-https://github.com}"
+  sarif_summary_status=$?
   set -e
+
+  if [[ "$sarif_summary_status" -ne 0 ]]; then
+    security_workflow_warn_annotation "SARIF findings overview" \
+      "scripts/sarif-findings-summary.js exited ${sarif_summary_status}; the PR comment and step summary omit the findings overview. See the job log for the error."
+  fi
 else
   security_workflow_warn "node is not available; skipping SARIF findings overview."
 fi
